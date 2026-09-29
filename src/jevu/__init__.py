@@ -1,4 +1,4 @@
-"""conceptscrub -- erase a target concept from text embeddings.
+"""jevu -- erase a target concept from text embeddings.
 
 Define a concept in plain English, label it zero-shot with JEV (or bring your own labels),
 and remove its linear signal from off-the-shelf embeddings with INLP or LEACE.

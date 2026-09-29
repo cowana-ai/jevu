@@ -11,7 +11,7 @@ venv/
 # Caches / artifacts
 .jev_cache/
 .jev_debias_cache/
-.conceptscrub_cache/
+.jevu_cache/
 *.tmp
 .pytest_cache/
 .ruff_cache/

@@ -1,4 +1,4 @@
-# conceptscrub
+# jevu
 
 Erase a **target concept** from text embeddings — defined in plain English, labeled
 zero-shot with [JEV](https://openrouter.ai/), and removed with a provable linear method
@@ -6,12 +6,12 @@ zero-shot with [JEV](https://openrouter.ai/), and removed with a provable linear
 [LEACE](https://arxiv.org/abs/2306.03819)).
 
 You bring **(1) a concept as a question, (2) your raw texts, (3) their embeddings** from any
-off-the-shelf model. `conceptscrub` labels the concept per text (no annotation needed) and
+off-the-shelf model. `jevu` labels the concept per text (no annotation needed) and
 returns embeddings with that concept's *linear* signal removed — while leaving the rest intact.
 Already have labels? Skip JEV and pass them directly.
 
 ```python
-from conceptscrub import ConceptScrubber
+from jevu import ConceptScrubber
 
 scrubber = ConceptScrubber(concept="Does the text describe a woman?", method="leace")
 scrubber.fit(embeddings=X, texts=texts)     # JEV scores the concept, fits the eraser
@@ -31,8 +31,8 @@ X_clean = scrubber.fit_transform(X, labels=y)
 ## Install
 
 ```bash
-pip install conceptscrub            # core (numpy, scikit-learn)
-pip install "conceptscrub[jev]"     # + httpx, for zero-shot concept labeling via JEV
+pip install jevu            # core (numpy, scikit-learn)
+pip install "jevu[jev]"     # + httpx, for zero-shot concept labeling via JEV
 ```
 
 Set `OPENROUTER_API_KEY` to use JEV labeling. Pass `cache_dir=...` to `JevLabeler` (or via

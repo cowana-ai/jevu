@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from conceptscrub import InlpEraser, LeaceEraser, concept_auc
+from jevu import InlpEraser, LeaceEraser, concept_auc
 
 
 def make_data(n=800, d=24, seed=0):

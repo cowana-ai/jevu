@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "conceptscrub"
+name = "jevu"
 version = "0.1.0"
 description = "Erase a target concept from text embeddings, labeled zero-shot with JEV."
 readme = "README.md"
@@ -29,11 +29,11 @@ openai = ["openai>=1.0"]        # optional convenience embedder
 dev = ["pytest>=7", "httpx>=0.24"]
 
 [project.urls]
-Homepage = "https://github.com/cowana-ai/conceptscrub"
-Issues = "https://github.com/cowana-ai/conceptscrub/issues"
+Homepage = "https://github.com/cowana-ai/jevu"
+Issues = "https://github.com/cowana-ai/jevu/issues"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/conceptscrub"]
+packages = ["src/jevu"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,7 +1,7 @@
 import httpx
 import numpy as np
 
-from conceptscrub import JevLabeler
+from jevu import JevLabeler
 
 
 def _mock_client(score_for):

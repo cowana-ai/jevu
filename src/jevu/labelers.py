@@ -1,9 +1,9 @@
 """Zero-shot concept labeling with JEV.
 
 A *labeler* turns raw texts into a concept score in ``[0, 1]`` per text. The point of
-``conceptscrub`` is that you can define the concept in one sentence and get calibrated
+``jevu`` is that you can define the concept in one sentence and get calibrated
 labels with no annotation, via JEV's ``noul`` scoring. If you already have labels, skip
-this entirely and pass them straight to :class:`~conceptscrub.scrubber.ConceptScrubber`.
+this entirely and pass them straight to :class:`~jevu.scrubber.ConceptScrubber`.
 """
 from __future__ import annotations
 

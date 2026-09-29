@@ -6,7 +6,7 @@ offline; swap in your model's embeddings and a `texts=` argument to use JEV labe
 """
 import numpy as np
 
-from conceptscrub import ConceptScrubber, concept_auc
+from jevu import ConceptScrubber, concept_auc
 
 # --- your data ---
 rng = np.random.default_rng(0)
