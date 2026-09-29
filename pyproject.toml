@@ -26,6 +26,7 @@ dependencies = [
 [project.optional-dependencies]
 jev = ["httpx>=0.24"]          # for zero-shot concept labeling via JEV
 openai = ["openai>=1.0"]        # optional convenience embedder
+examples = ["httpx>=0.24", "openai>=1.0"]  # to regenerate the example's data/embeddings
 dev = ["pytest>=7", "httpx>=0.24"]
 
 [project.urls]
