@@ -1,0 +1,39 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "conceptscrub"
+version = "0.1.0"
+description = "Erase a target concept from text embeddings, labeled zero-shot with JEV."
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+authors = [{ name = "Chingis Oinar" }]
+keywords = ["embeddings", "debiasing", "fairness", "concept-erasure", "inlp", "leace", "jev"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "numpy>=1.21",
+    "scikit-learn>=1.0",
+]
+
+[project.optional-dependencies]
+jev = ["httpx>=0.24"]          # for zero-shot concept labeling via JEV
+openai = ["openai>=1.0"]        # optional convenience embedder
+dev = ["pytest>=7", "httpx>=0.24"]
+
+[project.urls]
+Homepage = "https://github.com/cowana-ai/conceptscrub"
+Issues = "https://github.com/cowana-ai/conceptscrub/issues"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/conceptscrub"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
