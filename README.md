@@ -10,22 +10,25 @@ off-the-shelf model. `jevu` labels the concept per text (no annotation needed) a
 returns embeddings with that concept's *linear* signal removed — while leaving the rest intact.
 Already have labels? Skip JEV and pass them directly.
 
+Just give it a **concept** and your **texts** — it embeds, labels the concept with JEV, and
+erases it, all inside the one class:
+
 ```python
 from jevu import ConceptScrubber
 
 scrubber = ConceptScrubber(concept="Does the text describe a woman?", method="leace")
-scrubber.fit(embeddings=X, texts=texts)     # JEV scores the concept, fits the eraser
-X_clean = scrubber.transform(X_new)         # scrub unseen embeddings (fit once, apply forever)
+scrubber.fit(texts)                         # embed -> JEV-label -> fit the eraser
+X_clean = scrubber.transform(new_texts)     # embed -> erase (returns cleaned embeddings)
 
-print(scrubber.audit(embeddings=X, texts=texts))
+print(scrubber.audit(texts))
 # {'concept_auc_before': 1.00, 'concept_auc_after': 0.55}
 ```
 
-Bring-your-own labels (no JEV call):
+Already have embeddings and/or labels? Skip the API calls:
 
 ```python
-scrubber = ConceptScrubber(method="leace")
-X_clean = scrubber.fit_transform(X, labels=y)
+scrubber.fit(texts=texts, embeddings=X)     # your embeddings; JEV still labels the concept
+scrubber.fit(embeddings=X, labels=y)        # your embeddings and labels (no JEV, no OpenAI)
 ```
 
 ## Install
