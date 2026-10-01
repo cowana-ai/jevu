@@ -124,6 +124,15 @@ class ConceptScrubber:
         self._fit_X_ = X
         return self
 
+    def concept_scores(self, texts: Sequence[str]) -> np.ndarray:
+        """Calibrated concept score(s) per text, via the labeler, without fitting an eraser.
+
+        Returns shape ``(n,)`` for a single concept, or ``(n, k)`` when the concept is
+        LLM-expanded. Useful when you want the scores themselves (e.g. to pick a polarity
+        or audit against ground truth) rather than the erased embeddings.
+        """
+        return np.asarray(self._labeler_().score(list(texts)), dtype=float)
+
     def transform(self, texts: Optional[Sequence[str]] = None, *, embeddings=None) -> np.ndarray:
         return self.eraser.transform(self._resolve_embeddings(texts, embeddings))
 

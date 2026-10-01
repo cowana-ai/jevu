@@ -55,6 +55,12 @@ def test_byo_embeddings_with_concept_labeler():
     assert concept_auc(scr.transform(embeddings=X), z) < 0.65
 
 
+def test_concept_scores_delegates_to_labeler():
+    scr = ConceptScrubber(labeler=FakeLabeler())
+    s = scr.concept_scores(["a woman engineer", "a man"])
+    assert s[0] > 0.5 > s[1]
+
+
 def test_needs_labeler_or_labels():
     scr = ConceptScrubber()                         # no concept, no labeler
     with pytest.raises(ValueError):
