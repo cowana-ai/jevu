@@ -46,12 +46,17 @@ print(scrubber.audit(texts))                # {'concept_auc_before':…, 'after'
 ## Install
 
 ```bash
-pip install jevu            # core (numpy, scikit-learn)
-pip install "jevu[jev]"     # + httpx, for zero-shot concept labeling via JEV
+pip install jevu              # core: numpy + scikit-learn only (the erasers)
+pip install "jevu[jev]"       # + httpx, for zero-shot concept labeling via JEV
+pip install "jevu[openai]"    # + openai, for the embedder and LLM concept expansion
+pip install "jevu[examples]"  # + pandas/matplotlib/jupyter, to run the example notebooks
+pip install "jevu[dev]"       # everything, incl. pytest (development)
 ```
 
-Set `OPENROUTER_API_KEY` to use JEV labeling. Pass `cache_dir=...` to `JevLabeler` (or via
-`ConceptScrubber.fit(..., cache_dir=...)`) to cache scores on disk so re-runs are free.
+The core install has **no network/plotting deps** — the erasers are pure numpy/scikit-learn. `httpx`
+and `openai` are imported lazily, only when you actually call JEV / embed text, so install the extra
+for whatever you use. Set `OPENROUTER_API_KEY` (JEV) and `OPENAI_API_KEY` (embeddings / expansion);
+pass `cache_dir=...` to cache everything on disk so re-runs are free.
 
 ## How it works (the math)
 
