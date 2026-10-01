@@ -4,6 +4,7 @@ Define a concept in plain English, label it zero-shot with JEV (or bring your ow
 and remove its linear signal from off-the-shelf embeddings with INLP or LEACE.
 """
 from .audit import concept_auc, erasure_report, tpr_gap
+from .concepts import LLMConceptLabeler
 from .embedders import OpenAIEmbedder
 from .erasers import InlpEraser, LeaceEraser
 from .labelers import JevLabeler
@@ -15,6 +16,7 @@ __all__ = [
     "InlpEraser",
     "LeaceEraser",
     "JevLabeler",
+    "LLMConceptLabeler",
     "OpenAIEmbedder",
     "concept_auc",
     "erasure_report",

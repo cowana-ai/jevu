@@ -45,6 +45,21 @@ def test_transform_applies_to_unseen_rows():
     assert out.shape == X[400:].shape
 
 
+@pytest.mark.parametrize("Eraser", [InlpEraser, LeaceEraser])
+def test_multi_column_concept_erasure(Eraser):
+    # two sub-concepts living on two different directions (e.g. LLM-expanded facets)
+    rng = np.random.default_rng(0)
+    n, d = 800, 24
+    z0 = rng.integers(0, 2, size=n)
+    z1 = rng.integers(0, 2, size=n)
+    X = rng.standard_normal((n, d))
+    X[:, 0] += 4.0 * z0
+    X[:, 1] += 4.0 * z1
+    Z = np.column_stack([z0, z1])
+    Xc = Eraser().fit_transform(X, Z)
+    assert concept_auc(Xc, z0) < 0.65 and concept_auc(Xc, z1) < 0.65
+
+
 def test_inlp_stops_when_no_concept():
     rng = np.random.default_rng(1)
     X = rng.standard_normal((200, 10))

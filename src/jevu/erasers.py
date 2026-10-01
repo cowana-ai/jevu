@@ -56,34 +56,44 @@ class InlpEraser:
         self.random_state = random_state
 
     def fit(self, X, y) -> "InlpEraser":
+        """Fit on a single concept (``y`` shape ``(n,)``) or several at once
+        (``y`` shape ``(n, k)`` -- e.g. LLM-expanded sub-concepts): each round projects out
+        every still-recoverable concept column until none beats ``tol_auc``."""
         from sklearn.linear_model import LogisticRegression
         from sklearn.metrics import roc_auc_score
 
         X = _as_2d(X)
-        yb = _binarize(y)
+        Y = np.asarray(y)
+        if Y.ndim == 1:
+            Y = Y.reshape(-1, 1)
+        cols = [_binarize(Y[:, j]) for j in range(Y.shape[1])]
         d = X.shape[1]
         P = np.eye(d)
-        Xc = X.copy()
         self.n_iters_ = 0
-        if np.unique(yb).size < 2:
-            self.projection_ = P
-            return self
         for _ in range(self.max_iters):
-            clf = LogisticRegression(max_iter=2000, C=self.C,
-                                     random_state=self.random_state).fit(Xc, yb)
-            try:
-                auc = roc_auc_score(yb, clf.predict_proba(Xc)[:, 1])
-            except ValueError:
-                break
-            if auc <= self.tol_auc:
-                break
-            w = clf.coef_[0]
-            n = np.linalg.norm(w)
-            if n < 1e-12:
-                break
-            u = (w / n).reshape(-1, 1)
-            P = (np.eye(d) - u @ u.T) @ P   # accumulate rank-1 nullspace projections
             Xc = X @ P.T
+            removed = False
+            for yb in cols:
+                if np.unique(yb).size < 2:
+                    continue
+                clf = LogisticRegression(max_iter=2000, C=self.C,
+                                         random_state=self.random_state).fit(Xc, yb)
+                try:
+                    auc = roc_auc_score(yb, clf.predict_proba(Xc)[:, 1])
+                except ValueError:
+                    continue
+                if auc <= self.tol_auc:
+                    continue
+                w = clf.coef_[0]
+                n = np.linalg.norm(w)
+                if n < 1e-12:
+                    continue
+                u = (w / n).reshape(-1, 1)
+                P = (np.eye(d) - u @ u.T) @ P   # accumulate rank-1 nullspace projections
+                Xc = X @ P.T
+                removed = True
+            if not removed:
+                break
             self.n_iters_ += 1
         self.projection_ = P
         return self

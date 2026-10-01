@@ -31,6 +31,18 @@ scrubber.fit(texts=texts, embeddings=X)     # your embeddings; JEV still labels 
 scrubber.fit(embeddings=X, labels=y)        # your embeddings and labels (no JEV, no OpenAI)
 ```
 
+### Multi-faceted concepts (LLM expansion)
+
+Pass a high-level attribute and let an LLM expand it into several yes/no questions (woman, man,
+gendered pronouns, ...); JEV scores each and the whole multi-dimensional concept is erased at once:
+
+```python
+scrubber = ConceptScrubber(concept="gender", expand=True, n_questions=6)
+scrubber.fit(texts)
+print(scrubber.concept_questions_)          # the sub-questions the LLM generated
+print(scrubber.audit(texts))                # {'concept_auc_before':…, 'after':…, 'n_concepts': 6}
+```
+
 ## Install
 
 ```bash

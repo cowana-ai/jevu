@@ -22,6 +22,7 @@ from typing import Optional, Sequence
 import numpy as np
 
 from .audit import concept_auc
+from .concepts import LLMConceptLabeler
 from .embedders import OpenAIEmbedder
 from .erasers import InlpEraser, LeaceEraser
 from .labelers import JevLabeler
@@ -36,20 +37,26 @@ class ConceptScrubber:
 
     Parameters
     ----------
-    concept : the concept to erase, as a yes/no question (used to build the JEV labeler).
+    concept : the concept to erase. A yes/no question when ``expand=False``; a high-level
+        attribute (e.g. ``"gender"``) when ``expand=True``.
     method : ``"leace"`` (default, closed-form, minimal-damage) or ``"inlp"`` (iterative).
-    labeler : object with ``.score(texts) -> [0,1]``; overrides ``concept``.
+    expand : if True, an LLM expands ``concept`` into ``n_questions`` sub-questions (woman, man,
+        gendered pronouns, ...) and the whole multi-dimensional concept is erased.
+    n_questions : number of sub-questions when ``expand=True``.
+    labeler : object with ``.score(texts) -> (n,) or (n, k)``; overrides ``concept``/``expand``.
     embedder : object with ``.embed(texts) -> np.ndarray``; defaults to :class:`OpenAIEmbedder`.
-    embed_model, jev_model : model ids for the default embedder / labeler.
-    cache_dir : shared on-disk cache for embeddings and JEV scores.
-    openrouter_api_key, openai_api_key : keys for JEV / embeddings (else read from env).
+    embed_model, jev_model, llm_model : model ids for the embedder / JEV / concept-expansion LLM.
+    cache_dir : shared on-disk cache for embeddings, JEV scores, and concept expansions.
+    openrouter_api_key, openai_api_key : keys for JEV / (embeddings and the expansion LLM).
     eraser_kwargs : forwarded to the chosen eraser.
     """
 
     def __init__(self, concept: Optional[str] = None, method: str = "leace", *,
+                 expand: bool = False, n_questions: int = 6,
                  labeler=None, embedder=None,
                  embed_model: str = "text-embedding-3-small",
                  jev_model: str = "typesafe/jev-1.13",
+                 llm_model: str = "gpt-4o-mini",
                  cache_dir: Optional[str] = None,
                  openrouter_api_key: Optional[str] = None,
                  openai_api_key: Optional[str] = None,
@@ -58,10 +65,13 @@ class ConceptScrubber:
             raise ValueError(f"method must be one of {sorted(_ERASERS)}")
         self.concept = concept
         self.method = method
+        self.expand = expand
+        self.n_questions = n_questions
         self._labeler = labeler
         self._embedder = embedder
         self.embed_model = embed_model
         self.jev_model = jev_model
+        self.llm_model = llm_model
         self.cache_dir = cache_dir
         self._openrouter_api_key = openrouter_api_key
         self._openai_api_key = openai_api_key
@@ -73,8 +83,14 @@ class ConceptScrubber:
             if self.concept is None:
                 raise ValueError("no labels given and no concept/labeler set; "
                                  "pass concept=..., labeler=..., or labels=... to fit()")
-            self._labeler = JevLabeler(self.concept, model=self.jev_model,
-                                       api_key=self._openrouter_api_key, cache_dir=self.cache_dir)
+            if self.expand:
+                self._labeler = LLMConceptLabeler(
+                    self.concept, n_questions=self.n_questions, llm_model=self.llm_model,
+                    jev_model=self.jev_model, openai_api_key=self._openai_api_key,
+                    openrouter_api_key=self._openrouter_api_key, cache_dir=self.cache_dir)
+            else:
+                self._labeler = JevLabeler(self.concept, model=self.jev_model,
+                                           api_key=self._openrouter_api_key, cache_dir=self.cache_dir)
         return self._labeler
 
     def _embedder_(self):
@@ -96,7 +112,10 @@ class ConceptScrubber:
         if labels is None:
             if texts is None:
                 raise ValueError("pass labels=... or texts=... so the concept can be scored")
-            labels = self._labeler_().score(texts)
+            labeler = self._labeler_()
+            labels = labeler.score(texts)
+            if hasattr(labeler, "questions"):      # record LLM-expanded sub-questions, if any
+                self.concept_questions_ = labeler.questions(texts)
         y = np.asarray(labels, dtype=float)
         if len(y) != len(X):
             raise ValueError("labels/texts and embeddings must have the same length")
@@ -123,7 +142,15 @@ class ConceptScrubber:
             else:
                 raise ValueError("pass labels=... or texts=... to audit()")
         y = np.asarray(labels, dtype=float)
+        Xa = self.eraser.transform(X)
+
+        def mean_auc(Xm):
+            if y.ndim == 1:
+                return concept_auc(Xm, y)
+            return float(np.nanmean([concept_auc(Xm, y[:, j]) for j in range(y.shape[1])]))
+
         return {
-            "concept_auc_before": concept_auc(X, y),
-            "concept_auc_after": concept_auc(self.eraser.transform(X), y),
+            "concept_auc_before": mean_auc(X),
+            "concept_auc_after": mean_auc(Xa),
+            "n_concepts": 1 if y.ndim == 1 else int(y.shape[1]),
         }
