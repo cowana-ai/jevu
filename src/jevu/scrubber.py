@@ -1,19 +1,15 @@
-"""High-level API: give a concept, erase it from text (or from embeddings you already have).
+"""High-level API: give a concept and your embeddings, erase the concept.
 
-``ConceptScrubber`` owns the whole flow -- it embeds text (if you don't pass embeddings),
-labels the concept with JEV (if you don't pass labels), and fits an eraser. The simplest use
-is just a concept + text::
+Bring embeddings from **any** model — this package never embeds for you. Give it the embeddings plus
+either the raw texts (so JEV can label the concept) or your own labels::
 
     from jevu import ConceptScrubber
 
     scrubber = ConceptScrubber(concept="Does the text describe a woman?")
-    scrubber.fit(texts)                      # embed -> JEV-label -> fit eraser
-    clean = scrubber.transform(new_texts)    # embed -> erase  (returns cleaned embeddings)
+    scrubber.fit(X, texts=texts)         # your embeddings; JEV labels the concept
+    X_clean = scrubber.transform(X_new)  # erase the concept from new embeddings
 
-Bring your own embeddings and/or labels to skip the API calls::
-
-    scrubber.fit(texts=texts, embeddings=X)      # your embeddings, JEV labels the concept
-    scrubber.fit(embeddings=X, labels=y)         # your embeddings and labels (no JEV, no OpenAI)
+    scrubber.fit(X, labels=y)            # your embeddings and labels (no JEV at all)
 """
 from __future__ import annotations
 
@@ -23,7 +19,6 @@ import numpy as np
 
 from .audit import concept_auc
 from .concepts import LLMConceptLabeler
-from .embedders import OpenAIEmbedder
 from .erasers import InlpEraser, LeaceEraser
 from .labelers import JevLabeler
 
@@ -33,30 +28,26 @@ _ERASERS = {"leace": LeaceEraser, "inlp": InlpEraser}
 
 
 class ConceptScrubber:
-    """Erase a target concept from text embeddings.
+    """Erase a target concept from embeddings you provide.
 
     Parameters
     ----------
     concept : the concept to erase. A yes/no question when ``expand=False``; a high-level
         attribute (e.g. ``"gender"``) when ``expand=True``.
     method : ``"leace"`` (default, closed-form, minimal-damage) or ``"inlp"`` (iterative).
-    expand : if True, an LLM expands ``concept`` into ``n_questions`` sub-questions (woman, man,
-        gendered pronouns, ...) and the whole multi-dimensional concept is erased.
+    expand : if True, an LLM expands ``concept`` into ``n_questions`` sub-questions and the whole
+        multi-dimensional concept is erased at once.
     n_questions : number of sub-questions when ``expand=True``.
     labeler : object with ``.score(texts) -> (n,) or (n, k)``; overrides ``concept``/``expand``.
-    embedder : object with ``.embed(texts) -> np.ndarray``; defaults to :class:`OpenAIEmbedder`.
-    embed_model, jev_model, llm_model : model ids for the embedder / JEV / concept-expansion LLM.
-    cache_dir : shared on-disk cache for embeddings, JEV scores, and concept expansions.
-    openrouter_api_key, openai_api_key : keys for JEV / (embeddings and the expansion LLM).
+    jev_model, llm_model : model ids for JEV scoring / concept expansion.
+    cache_dir : shared on-disk cache for JEV scores and concept expansions.
+    openrouter_api_key, openai_api_key : keys for JEV / the expansion LLM (else read from env).
     eraser_kwargs : forwarded to the chosen eraser.
     """
 
     def __init__(self, concept: Optional[str] = None, method: str = "leace", *,
-                 expand: bool = False, n_questions: int = 6,
-                 labeler=None, embedder=None,
-                 embed_model: str = "text-embedding-3-small",
-                 jev_model: str = "typesafe/jev-1.13",
-                 llm_model: str = "gpt-4o-mini",
+                 expand: bool = False, n_questions: int = 6, labeler=None,
+                 jev_model: str = "typesafe/jev-1.13", llm_model: str = "gpt-4o-mini",
                  cache_dir: Optional[str] = None,
                  openrouter_api_key: Optional[str] = None,
                  openai_api_key: Optional[str] = None,
@@ -68,8 +59,6 @@ class ConceptScrubber:
         self.expand = expand
         self.n_questions = n_questions
         self._labeler = labeler
-        self._embedder = embedder
-        self.embed_model = embed_model
         self.jev_model = jev_model
         self.llm_model = llm_model
         self.cache_dir = cache_dir
@@ -77,12 +66,11 @@ class ConceptScrubber:
         self._openai_api_key = openai_api_key
         self.eraser = _ERASERS[method](**eraser_kwargs)
 
-    # -- lazy components (only built when actually needed) ----------------------
     def _labeler_(self):
         if self._labeler is None:
             if self.concept is None:
                 raise ValueError("no labels given and no concept/labeler set; "
-                                 "pass concept=..., labeler=..., or labels=... to fit()")
+                                 "pass concept=..., labeler=..., or labels=...")
             if self.expand:
                 self._labeler = LLMConceptLabeler(
                     self.concept, n_questions=self.n_questions, llm_model=self.llm_model,
@@ -93,56 +81,44 @@ class ConceptScrubber:
                                            api_key=self._openrouter_api_key, cache_dir=self.cache_dir)
         return self._labeler
 
-    def _embedder_(self):
-        if self._embedder is None:
-            self._embedder = OpenAIEmbedder(model=self.embed_model,
-                                            api_key=self._openai_api_key, cache_dir=self.cache_dir)
-        return self._embedder
-
-    def _resolve_embeddings(self, texts, embeddings) -> np.ndarray:
-        if embeddings is not None:
-            return np.asarray(embeddings, dtype=float)
-        if texts is None:
-            raise ValueError("pass texts=... (to embed) or embeddings=...")
-        return np.asarray(self._embedder_().embed(texts), dtype=float)
-
-    # -- public API ------------------------------------------------------------
-    def fit(self, texts: Optional[Sequence[str]] = None, *, embeddings=None, labels=None) -> "ConceptScrubber":
-        X = self._resolve_embeddings(texts, embeddings)
+    def _labels_for(self, X, texts, labels) -> np.ndarray:
         if labels is None:
             if texts is None:
                 raise ValueError("pass labels=... or texts=... so the concept can be scored")
             labeler = self._labeler_()
             labels = labeler.score(texts)
-            if hasattr(labeler, "questions"):      # record LLM-expanded sub-questions, if any
+            if hasattr(labeler, "questions"):           # record LLM-expanded sub-questions, if any
                 self.concept_questions_ = labeler.questions(texts)
         y = np.asarray(labels, dtype=float)
         if len(y) != len(X):
             raise ValueError("labels/texts and embeddings must have the same length")
+        return y
+
+    # -- public API ------------------------------------------------------------
+    def fit(self, embeddings, *, texts: Optional[Sequence[str]] = None, labels=None) -> "ConceptScrubber":
+        X = np.asarray(embeddings, dtype=float)
+        y = self._labels_for(X, texts, labels)
         self.eraser.fit(X, y)
         self.labels_ = y
-        self._fit_X_ = X
         return self
 
-    def concept_scores(self, texts: Sequence[str]) -> np.ndarray:
-        """Calibrated concept score(s) per text, via the labeler, without fitting an eraser.
+    def transform(self, embeddings) -> np.ndarray:
+        return self.eraser.transform(np.asarray(embeddings, dtype=float))
 
-        Returns shape ``(n,)`` for a single concept, or ``(n, k)`` when the concept is
-        LLM-expanded. Useful when you want the scores themselves (e.g. to pick a polarity
-        or audit against ground truth) rather than the erased embeddings.
+    def fit_transform(self, embeddings, *, texts: Optional[Sequence[str]] = None, labels=None) -> np.ndarray:
+        self.fit(embeddings, texts=texts, labels=labels)
+        return self.transform(embeddings)
+
+    def concept_scores(self, texts: Sequence[str]) -> np.ndarray:
+        """Calibrated concept score(s) per text via the labeler, without fitting an eraser.
+
+        Shape ``(n,)`` for a single concept, or ``(n, k)`` when the concept is LLM-expanded.
         """
         return np.asarray(self._labeler_().score(list(texts)), dtype=float)
 
-    def transform(self, texts: Optional[Sequence[str]] = None, *, embeddings=None) -> np.ndarray:
-        return self.eraser.transform(self._resolve_embeddings(texts, embeddings))
-
-    def fit_transform(self, texts: Optional[Sequence[str]] = None, *, embeddings=None, labels=None) -> np.ndarray:
-        self.fit(texts, embeddings=embeddings, labels=labels)
-        return self.eraser.transform(self._fit_X_)
-
-    def audit(self, texts: Optional[Sequence[str]] = None, *, embeddings=None, labels=None) -> dict:
-        """Concept recoverability (probe AUC) before vs. after erasure on this data."""
-        X = self._resolve_embeddings(texts, embeddings)
+    def audit(self, embeddings, *, texts: Optional[Sequence[str]] = None, labels=None) -> dict:
+        """Concept recoverability (probe AUC) before vs. after erasure on these embeddings."""
+        X = np.asarray(embeddings, dtype=float)
         if labels is None:
             if texts is not None:
                 labels = self._labeler_().score(texts)

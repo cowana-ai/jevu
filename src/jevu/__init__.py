@@ -5,7 +5,6 @@ and remove its linear signal from off-the-shelf embeddings with INLP or LEACE.
 """
 from .audit import concept_auc, erasure_report, tpr_gap
 from .concepts import LLMConceptLabeler
-from .embedders import OpenAIEmbedder
 from .erasers import InlpEraser, LeaceEraser
 from .labelers import JevLabeler
 from .scrubber import ConceptScrubber
@@ -17,7 +16,6 @@ __all__ = [
     "LeaceEraser",
     "JevLabeler",
     "LLMConceptLabeler",
-    "OpenAIEmbedder",
     "concept_auc",
     "erasure_report",
     "tpr_gap",

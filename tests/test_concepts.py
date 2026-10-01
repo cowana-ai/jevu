@@ -59,7 +59,7 @@ def test_scrubber_expand_multi_concept_erasure():
     X[:, 0] += 5.0 * np.array([1.0 if "woman" in t else 0.0 for t in texts])
     X[:, 1] += 5.0 * np.array([1.0 if ("man" in t and "woman" not in t) else 0.0 for t in texts])
     scr = ConceptScrubber(method="leace", labeler=MultiLabeler())
-    scr.fit(texts=texts, embeddings=X)
-    rep = scr.audit(texts=texts, embeddings=X)
+    scr.fit(X, texts=texts)
+    rep = scr.audit(X, texts=texts)
     assert rep["n_concepts"] == 2
     assert rep["concept_auc_before"] > 0.9 and rep["concept_auc_after"] < 0.7

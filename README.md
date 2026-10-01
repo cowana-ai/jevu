@@ -10,25 +10,24 @@ off-the-shelf model. `jevu` labels the concept per text (no annotation needed) a
 returns embeddings with that concept's *linear* signal removed — while leaving the rest intact.
 Already have labels? Skip JEV and pass them directly.
 
-Just give it a **concept** and your **texts** — it embeds, labels the concept with JEV, and
-erases it, all inside the one class:
+Bring **embeddings from any model** plus a **concept** — JEV labels the concept, the eraser removes it:
 
 ```python
 from jevu import ConceptScrubber
 
+X = your_model.encode(texts)                 # embeddings from ANY model (jevu never embeds)
 scrubber = ConceptScrubber(concept="Does the text describe a woman?", method="leace")
-scrubber.fit(texts)                         # embed -> JEV-label -> fit the eraser
-X_clean = scrubber.transform(new_texts)     # embed -> erase (returns cleaned embeddings)
+scrubber.fit(X, texts=texts)                 # JEV labels the concept, fits the eraser
+X_clean = scrubber.transform(X_new)          # erase the concept from new embeddings
 
-print(scrubber.audit(texts))
-# {'concept_auc_before': 1.00, 'concept_auc_after': 0.55}
+print(scrubber.audit(X, texts=texts))
+# {'concept_auc_before': 1.00, 'concept_auc_after': 0.55, 'n_concepts': 1}
 ```
 
-Already have embeddings and/or labels? Skip the API calls:
+Already have labels? Skip JEV entirely — it's then pure numpy/scikit-learn:
 
 ```python
-scrubber.fit(texts=texts, embeddings=X)     # your embeddings; JEV still labels the concept
-scrubber.fit(embeddings=X, labels=y)        # your embeddings and labels (no JEV, no OpenAI)
+scrubber.fit(X, labels=y)                    # your embeddings and labels
 ```
 
 ### Multi-faceted concepts (LLM expansion)
@@ -38,9 +37,9 @@ gendered pronouns, ...); JEV scores each and the whole multi-dimensional concept
 
 ```python
 scrubber = ConceptScrubber(concept="gender", expand=True, n_questions=6)
-scrubber.fit(texts)
+scrubber.fit(X, texts=texts)                # X = your embeddings
 print(scrubber.concept_questions_)          # the sub-questions the LLM generated
-print(scrubber.audit(texts))                # {'concept_auc_before':…, 'after':…, 'n_concepts': 6}
+print(scrubber.audit(X, texts=texts))       # {'concept_auc_before':…, 'after':…, 'n_concepts': 6}
 ```
 
 ## Install
@@ -48,15 +47,15 @@ print(scrubber.audit(texts))                # {'concept_auc_before':…, 'after'
 ```bash
 pip install jevu              # core: numpy + scikit-learn only (the erasers)
 pip install "jevu[jev]"       # + httpx, for zero-shot concept labeling via JEV
-pip install "jevu[openai]"    # + openai, for the embedder and LLM concept expansion
+pip install "jevu[openai]"    # + openai, only for LLM concept expansion (expand=True)
 pip install "jevu[examples]"  # + pandas/matplotlib/jupyter, to run the example notebooks
 pip install "jevu[dev]"       # everything, incl. pytest (development)
 ```
 
-The core install has **no network/plotting deps** — the erasers are pure numpy/scikit-learn. `httpx`
-and `openai` are imported lazily, only when you actually call JEV / embed text, so install the extra
-for whatever you use. Set `OPENROUTER_API_KEY` (JEV) and `OPENAI_API_KEY` (embeddings / expansion);
-pass `cache_dir=...` to cache everything on disk so re-runs are free.
+**jevu never computes embeddings** — you pass them in from any model. The core install is pure
+numpy/scikit-learn; `httpx` (JEV) and `openai` (concept expansion) are lazy extras. Set
+`OPENROUTER_API_KEY` for JEV labeling (and `OPENAI_API_KEY` if you use `expand=True`); pass
+`cache_dir=...` to cache scores on disk so re-runs are free.
 
 ## How it works (the math)
 

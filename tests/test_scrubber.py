@@ -19,40 +19,23 @@ class FakeLabeler:
         return np.array([1.0 if "woman" in t.lower() else 0.0 for t in texts])
 
 
-class FakeEmbedder:
-    """Deterministic embedder that plants the concept on dim 0, no network."""
-    def embed(self, texts):
-        rng = np.random.default_rng(0)
-        X = rng.standard_normal((len(texts), 16))
-        for i, t in enumerate(texts):
-            if "woman" in t.lower():
-                X[i, 0] += 5.0
-        return X
-
-
-def test_fit_with_explicit_labels_and_embeddings():
+def test_fit_with_explicit_labels():
     X, z = make_data()
     scr = ConceptScrubber(method="leace")          # no concept/labeler needed when labels given
-    Xc = scr.fit_transform(embeddings=X, labels=z)
+    Xc = scr.fit_transform(X, labels=z)
     assert concept_auc(Xc, z) < 0.65
 
 
-def test_text_first_embeds_and_labels_internally():
+def test_labels_via_labeler_byo_embeddings():
     texts = (["a woman leads the team"] * 50) + (["a man leads the team"] * 50)
-    scr = ConceptScrubber(concept="woman?", method="inlp",
-                          labeler=FakeLabeler(), embedder=FakeEmbedder())
-    scr.fit(texts)                                  # embeds + labels internally
-    report = scr.audit(texts)
+    z = np.array([1] * 50 + [0] * 50)
+    rng = np.random.default_rng(3)
+    X = rng.standard_normal((100, 16)); X[:, 0] += 5.0 * z   # bring your own embeddings
+    scr = ConceptScrubber(method="inlp", labeler=FakeLabeler())
+    scr.fit(X, texts=texts)                         # labeler scores the texts; X is provided
+    report = scr.audit(X, texts=texts)
     assert report["concept_auc_before"] > 0.9
     assert report["concept_auc_after"] < 0.7
-
-
-def test_byo_embeddings_with_concept_labeler():
-    X, z = make_data(n=120, d=16)
-    texts = ["a woman" if zi else "a man" for zi in z]
-    scr = ConceptScrubber(method="leace", labeler=FakeLabeler())
-    scr.fit(texts=texts, embeddings=X)             # your embeddings, labeler scores the concept
-    assert concept_auc(scr.transform(embeddings=X), z) < 0.65
 
 
 def test_concept_scores_delegates_to_labeler():
@@ -62,9 +45,10 @@ def test_concept_scores_delegates_to_labeler():
 
 
 def test_needs_labeler_or_labels():
+    X, _ = make_data(n=20, d=8)
     scr = ConceptScrubber()                         # no concept, no labeler
     with pytest.raises(ValueError):
-        scr.fit(texts=["anything"])                 # nothing can produce labels
+        scr.fit(X)                                  # nothing can produce labels
 
 
 def test_bad_method():
