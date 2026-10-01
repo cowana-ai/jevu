@@ -40,6 +40,29 @@ def test_expands_concept_and_scores_matrix(tmp_path):
     assert M[0, 0] > 0.8 and M[1, 1] > 0.8     # woman-col fires on bio 0, man-col on bio 1
 
 
+def test_expansion_prompt_handles_terse_and_discriminative():
+    from jevu.concepts import EXPANSION_SYSTEM
+    s = EXPANSION_SYSTEM.lower()
+    assert ("terse" in s) or ("ambiguous" in s)     # robust to short/ambiguous input
+    assert "discriminative" in s                     # must split texts, not be constant
+    assert "yes/no" in s
+
+
+def test_terse_concept_expands_via_llm(tmp_path):
+    import json, types, httpx
+    qs = ["Does the text refer to a woman or female person?",
+          "Does the text refer to a man or male person?"]
+    llm = types.SimpleNamespace(chat=types.SimpleNamespace(completions=types.SimpleNamespace(
+        create=lambda **kw: types.SimpleNamespace(choices=[types.SimpleNamespace(
+            message=types.SimpleNamespace(content=json.dumps({"questions": qs}))) ]))))
+    jev = httpx.Client(transport=httpx.MockTransport(
+        lambda r: httpx.Response(200, json={"answers": {"q1": {"noul": 0.5}}})))
+    lab = LLMConceptLabeler("genders", n_questions=2, llm_client=llm, jev_client=jev,
+                            openai_api_key="k", openrouter_api_key="k", cache_dir=str(tmp_path))
+    assert lab.questions() == qs                      # terse "genders" -> concrete questions
+    assert lab.score(["a woman led"]).shape == (1, 2)
+
+
 def test_explicit_questions_skip_llm():
     lab = LLMConceptLabeler("gender", questions=["Does the text refer to a woman?"])
     assert lab.questions() == ["Does the text refer to a woman?"]   # no client needed

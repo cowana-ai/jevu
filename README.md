@@ -32,8 +32,11 @@ scrubber.fit(X, labels=y)                    # your embeddings and labels
 
 ### Multi-faceted concepts (LLM expansion)
 
-Pass a high-level attribute and let an LLM expand it into several yes/no questions (woman, man,
-gendered pronouns, ...); JEV scores each and the whole multi-dimensional concept is erased at once:
+Pass a high-level — even **terse or ambiguous** — attribute (`"gender"`, `"genders"`, `"age"`,
+`"tone"`) and let an LLM expand it into several concrete, discriminative yes/no questions (woman,
+man, gendered pronouns, ...); JEV scores each and the whole multi-dimensional concept is erased at
+once. This is the robust way to erase a bare word — a single raw noun often yields non-discriminative
+JEV scores and erases nothing:
 
 ```python
 scrubber = ConceptScrubber(concept="gender", expand=True, n_questions=6)

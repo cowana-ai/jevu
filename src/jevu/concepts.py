@@ -20,14 +20,23 @@ from .labelers import JevLabeler
 __all__ = ["LLMConceptLabeler"]
 
 EXPANSION_SYSTEM = (
-    "You turn a high-level attribute that should be removed from text embeddings into concrete "
-    "yes/no questions that detect it and its sub-facets. Each question is scored independently on "
-    "ONE text, must be answerable from the text alone, and must be role-neutral (start like "
-    "'Does the text ...?'). No two questions should be near-duplicates. Cover the attribute's "
-    "distinct facets -- for example, for 'gender': whether it refers to a woman/female person, "
-    "whether it refers to a man/male person, and whether it uses gendered pronouns, titles, or "
-    "names. Return a JSON object with exactly one key, 'questions', containing exactly %d distinct "
-    "question strings."
+    "You convert an attribute that should be removed from text embeddings into concrete yes/no "
+    "DETECTION questions.\n"
+    "The attribute may be given tersely or ambiguously -- a single word, a plural, a typo, a short "
+    "phrase, or an underspecified topic (e.g. 'genders', 'age', 'tone', 'politics'). Do NOT score "
+    "the raw phrase; first interpret it charitably as a well-defined attribute of a person or text, "
+    "picking the most common sensible reading if it is ambiguous, then enumerate its main facets.\n"
+    "Write questions that DETECT that attribute, each scored independently on ONE text. Requirements "
+    "for EVERY question: it is a yes/no question starting like 'Does the text ...?'; it is answerable "
+    "from the text alone; it is role-neutral (works for a short query or a long document); it is "
+    "concrete and DISCRIMINATIVE so it splits texts roughly -- never almost-always-yes or "
+    "almost-always-no; and no two questions are near-duplicates.\n"
+    "Spread the questions across the attribute's distinct facets. For example, for 'gender': refers "
+    "to a woman or female person; refers to a man or male person; uses gendered pronouns, titles, or "
+    "names. If the attribute is naturally binary, still phrase each side as its own detection "
+    "question rather than one vague question.\n"
+    "Return a JSON object with exactly one key, 'questions', containing exactly %d distinct question "
+    "strings."
 )
 
 
@@ -38,9 +47,13 @@ def _digest(obj) -> str:
 class LLMConceptLabeler:
     """Expand a concept with an LLM, then label each sub-question with JEV.
 
+    The concept may be terse or ambiguous (``"genders"``, ``"age"``, ``"tone"``) -- the LLM
+    interprets it and writes concrete, discriminative detection questions, so you don't have to
+    phrase a clean yes/no question yourself.
+
     Parameters
     ----------
-    concept : high-level attribute to erase (e.g. ``"gender"``, ``"sentiment"``).
+    concept : attribute to erase; terse/ambiguous input is fine (e.g. ``"gender"``, ``"sentiment"``).
     n_questions : how many yes/no questions to generate.
     questions : provide questions directly to skip the LLM call entirely.
     llm_model : chat model used to expand the concept.
