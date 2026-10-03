@@ -103,6 +103,33 @@ def test_select_k_greedy_keeps_k_questions():
     assert scr.concept_questions_ == PoolLabeler._qs
 
 
+def test_select_k_with_sampling():
+    # pool scored on a subset for selection; winners scored on full data
+    rng = np.random.default_rng(0)
+    n, d = 300, 16
+    a = rng.integers(0, 2, n); b = rng.integers(0, 2, n)
+    X = rng.standard_normal((n, d)); X[:, 0] += 4.0 * a; X[:, 1] += 4.0 * b
+
+    class PoolLabeler:
+        _qs = ["q_a", "q_a_copy", "q_b", "q_noise"]
+        calls = {"full_rows": 0}
+        def questions(self, texts=None): return self._qs
+        def score_questions(self, questions, texts):
+            self.calls["full_rows"] = max(self.calls["full_rows"], len(texts))
+            cols = {"q_a": a, "q_a_copy": a, "q_b": b,
+                    "q_noise": (rng.standard_normal(n) > 0).astype(int)}
+            # emulate scoring only the requested rows/questions
+            idx = range(len(texts))  # texts are the first len(texts) here for the test
+            return np.column_stack([cols[q][:len(texts)] for q in questions]).astype(float)
+        def score(self, texts): return self.score_questions(self._qs, texts)
+
+    lab = PoolLabeler()
+    scr = ConceptScrubber(method="leace", expand=True, labeler=lab, select_k=2, select_sample=120)
+    scr.fit(X, texts=["t"] * n)
+    assert len(scr.selected_questions_) == 2
+    assert scr.labels_.shape == (n, 2)          # eraser fit on full data, 2 questions
+
+
 def test_bad_n_questions():
     import pytest
     with pytest.raises(ValueError):

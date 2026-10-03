@@ -158,21 +158,24 @@ class LLMConceptLabeler:
         return self._questions
 
     def score(self, texts: Sequence[str]) -> np.ndarray:
-        """Return an ``(n_texts, n_questions)`` matrix of JEV scores, one column per sub-question.
+        """Return an ``(n_texts, n_questions)`` matrix of JEV scores for the concept's questions."""
+        return self.score_questions(self.questions(texts), texts)
 
-        All ``questions x texts`` cells are scored in a single shared thread pool (one pooled HTTP
-        client), so the whole job runs at ``max_workers`` concurrency rather than one question at a
-        time.
+    def score_questions(self, questions: Sequence[str], texts: Sequence[str]) -> np.ndarray:
+        """Score an explicit list of questions over texts -> ``(n_texts, len(questions))``.
+
+        All ``questions x texts`` cells are scored in one shared thread pool (one pooled HTTP client),
+        so the whole job runs at ``max_workers`` concurrency rather than one question at a time.
         """
         texts = list(texts)
-        qs = self.questions(texts)
+        qs = list(questions)
         labs = [JevLabeler(q, model=self.jev_model, api_key=self.openrouter_api_key,
                            cache_dir=str(self.cache_dir) if self.cache_dir else None,
                            max_workers=self.max_workers) for q in qs]
         tasks = [(ti, ci, labs[ci], t) for ci in range(len(qs)) for ti, t in enumerate(texts)]
         n_missing = sum(1 for _, _, lab, t in tasks
                         if not (lab.cache_dir and lab._cache_path(lab._payload(t)).exists()))
-        logger.info("scoring %d texts x %d sub-concepts = %d cells (%d cached, %d to fetch)",
+        logger.info("scoring %d texts x %d questions = %d cells (%d cached, %d to fetch)",
                     len(texts), len(qs), len(tasks), len(tasks) - n_missing, n_missing)
         client = (self.jev_client or labs[0]._make_client()) if n_missing else None
         close = n_missing and self.jev_client is None

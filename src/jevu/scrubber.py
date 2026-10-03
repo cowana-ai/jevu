@@ -68,6 +68,9 @@ class ConceptScrubber:
     select_k : if set (with expansion), greedily keep only the ``select_k`` questions that best
         reconstruct the full pool, and erase just those -- a cheap, reusable eraser. The picks are
         logged and stored in ``selected_questions_``.
+    select_sample : run the (expensive) selection on a random subset of this many rows -- the pool is
+        scored only on the sample, then just the ``select_k`` winners are scored on the full data.
+        Cuts selection cost from ``pool x n`` to ``pool x select_sample + select_k x n``.
     labeler : object with ``.score(texts) -> (n,) or (n, k)``; overrides ``concept``/``expand``.
     jev_model, llm_model : model ids for JEV scoring / concept expansion.
     cache_dir : shared on-disk cache for JEV scores and concept expansions.
@@ -77,7 +80,8 @@ class ConceptScrubber:
 
     def __init__(self, concept: Optional[str] = None, method: str = "leace", *,
                  expand=False, n_questions: int = 6, max_questions: int = 24,
-                 select_k: Optional[int] = None, labeler=None,
+                 select_k: Optional[int] = None, select_sample: Optional[int] = None,
+                 random_state: int = 0, labeler=None,
                  jev_model: str = "typesafe/jev-1.13", llm_model: str = "gpt-4o-mini",
                  cache_dir: Optional[str] = None, max_workers: int = 8,
                  openrouter_api_key: Optional[str] = None,
@@ -91,6 +95,8 @@ class ConceptScrubber:
         self.n_questions = n_questions
         self.max_questions = max_questions
         self.select_k = select_k
+        self.select_sample = select_sample
+        self.random_state = random_state
         self._labeler = labeler
         self.jev_model = jev_model
         self.llm_model = llm_model
@@ -123,18 +129,32 @@ class ConceptScrubber:
             if texts is None:
                 raise ValueError("pass labels=... or texts=... so the concept can be scored")
             labeler = self._labeler_()
-            labels = labeler.score(texts)
-            if hasattr(labeler, "questions"):           # record LLM-expanded sub-questions, if any
-                self.concept_questions_ = labeler.questions(texts)
-            labels = np.asarray(labels, dtype=float)
-            # keep only the greedily-selected questions, if requested
-            if self.select_k and labels.ndim == 2 and self.select_k < labels.shape[1] \
-                    and getattr(self, "concept_questions_", None):
-                idx = _greedy_select(labels, self.select_k, self.concept_questions_)
-                self.selected_questions_ = [self.concept_questions_[i] for i in idx]
-                logger.info("kept %d/%d questions: %s",
-                            len(idx), labels.shape[1], self.selected_questions_)
-                labels = labels[:, idx]
+            pool = labeler.questions(texts) if hasattr(labeler, "questions") else None
+            can_select = (self.select_k and pool is not None and self.select_k < len(pool))
+
+            if can_select and self.select_sample and hasattr(labeler, "score_questions") \
+                    and self.select_sample < len(texts):
+                # (1) score the whole pool on a small SAMPLE, (2) greedily pick k there,
+                # (3) score only the k winners on the FULL data -> fit the eraser on those.
+                self.concept_questions_ = pool
+                rng = np.random.default_rng(self.random_state)
+                sub = rng.choice(len(texts), self.select_sample, replace=False)
+                sub_texts = [texts[i] for i in sub]
+                logger.info("selecting %d/%d questions on a %d-row sample", self.select_k, len(pool), len(sub))
+                Zsub = np.asarray(labeler.score_questions(pool, sub_texts), dtype=float)
+                idx = _greedy_select(Zsub, self.select_k, pool)
+                self.selected_questions_ = [pool[i] for i in idx]
+                logger.info("kept %d/%d questions: %s", len(idx), len(pool), self.selected_questions_)
+                labels = labeler.score_questions(self.selected_questions_, texts)
+            else:
+                labels = np.asarray(labeler.score(texts), dtype=float)
+                if pool is not None:
+                    self.concept_questions_ = pool
+                if can_select:                          # select on the full pool (no sampling)
+                    idx = _greedy_select(labels, self.select_k, pool)
+                    self.selected_questions_ = [pool[i] for i in idx]
+                    logger.info("kept %d/%d questions: %s", len(idx), labels.shape[1], self.selected_questions_)
+                    labels = labels[:, idx]
         y = np.asarray(labels, dtype=float)
         if len(y) != len(X):
             raise ValueError("labels/texts and embeddings must have the same length")
