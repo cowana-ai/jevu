@@ -43,8 +43,9 @@ def test_expands_concept_and_scores_matrix(tmp_path):
 def test_expansion_prompt_handles_terse_and_discriminative():
     from jevu.concepts import EXPANSION_SYSTEM
     s = EXPANSION_SYSTEM.lower()
-    assert ("terse" in s) or ("ambiguous" in s)     # robust to short/ambiguous input
-    assert "discriminative" in s                     # must split texts, not be constant
+    assert ("terse" in s) or ("ambiguous" in s)       # robust to short/ambiguous input
+    assert "cover" in s                                # many-valued identity -> covering sub-categories
+    assert ("binary" in s) and ("identity" in s)      # branches on cardinality
     assert "yes/no" in s
 
 
