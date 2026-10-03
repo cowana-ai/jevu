@@ -11,11 +11,13 @@ import hashlib
 import json
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional, Sequence
 
 import numpy as np
 
+from ._util import progress
 from .labelers import JevLabeler
 
 logger = logging.getLogger(__name__)
@@ -126,15 +128,35 @@ class LLMConceptLabeler:
         return self._questions
 
     def score(self, texts: Sequence[str]) -> np.ndarray:
-        """Return an ``(n_texts, n_questions)`` matrix of JEV scores, one column per sub-question."""
+        """Return an ``(n_texts, n_questions)`` matrix of JEV scores, one column per sub-question.
+
+        All ``questions x texts`` cells are scored in a single shared thread pool (one pooled HTTP
+        client), so the whole job runs at ``max_workers`` concurrency rather than one question at a
+        time.
+        """
         texts = list(texts)
         qs = self.questions(texts)
-        cols = []
-        for i, q in enumerate(qs):
-            logger.info("scoring sub-concept %d/%d: %r", i + 1, len(qs), q)
-            lab = JevLabeler(q, model=self.jev_model, api_key=self.openrouter_api_key,
-                             cache_dir=str(self.cache_dir) if self.cache_dir else None,
-                             client=self.jev_client, max_workers=self.max_workers,
-                             progress=self.progress)
-            cols.append(lab.score(texts))
-        return np.column_stack(cols)
+        labs = [JevLabeler(q, model=self.jev_model, api_key=self.openrouter_api_key,
+                           cache_dir=str(self.cache_dir) if self.cache_dir else None,
+                           max_workers=self.max_workers) for q in qs]
+        tasks = [(ti, ci, labs[ci], t) for ci in range(len(qs)) for ti, t in enumerate(texts)]
+        n_missing = sum(1 for _, _, lab, t in tasks
+                        if not (lab.cache_dir and lab._cache_path(lab._payload(t)).exists()))
+        logger.info("scoring %d texts x %d sub-concepts = %d cells (%d cached, %d to fetch)",
+                    len(texts), len(qs), len(tasks), len(tasks) - n_missing, n_missing)
+        client = (self.jev_client or labs[0]._make_client()) if n_missing else None
+        close = n_missing and self.jev_client is None
+        M = np.empty((len(texts), len(qs)), dtype=float)
+        try:
+            with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
+                futs = {pool.submit(lab._score_one, t, client): (ti, ci)
+                        for ti, ci, lab, t in tasks}
+                desc = f"JEV x{len(qs)}: {self.concept[:30]}"
+                for fut in progress(as_completed(futs), total=len(tasks), desc=desc,
+                                    enabled=self.progress and len(tasks) > 1):
+                    ti, ci = futs[fut]
+                    M[ti, ci] = fut.result()
+            return M
+        finally:
+            if close and client is not None and hasattr(client, "close"):
+                client.close()

@@ -103,6 +103,20 @@ import logging
 logging.basicConfig(level=logging.INFO)   # see labeling / expansion / erasure details
 ```
 
+## Performance
+
+The cost is the JEV HTTP calls (network-bound), so **threading is the right tool and is already used**
+— calls run concurrently via a thread pool with a shared, pooled HTTP client. Multiprocessing would
+not help (it's for CPU-bound work) and would add overhead. To go faster:
+
+- **Raise concurrency:** `ConceptScrubber(..., max_workers=24)` (default 8). Higher = more parallel
+  JEV calls, subject to rate limits (429s are retried with backoff).
+- **`expand=True` scores all `questions x texts` cells in one pool**, not one question at a time.
+- **Cache:** pass `cache_dir=...` — every score is cached per `(model, text, question)`, so re-runs and
+  repeated texts are free. The slow case is always a cache *miss* (new concept/text).
+
+The erasers themselves (LEACE/INLP) are fast numpy and not the bottleneck.
+
 ## When to use JEV vs. your own labels
 
 The erasure math only needs *a* label per example. If you **already have** the attribute labeled,

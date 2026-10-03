@@ -48,7 +48,7 @@ class ConceptScrubber:
     def __init__(self, concept: Optional[str] = None, method: str = "leace", *,
                  expand: bool = False, n_questions: int = 6, labeler=None,
                  jev_model: str = "typesafe/jev-1.13", llm_model: str = "gpt-4o-mini",
-                 cache_dir: Optional[str] = None,
+                 cache_dir: Optional[str] = None, max_workers: int = 8,
                  openrouter_api_key: Optional[str] = None,
                  openai_api_key: Optional[str] = None,
                  **eraser_kwargs):
@@ -62,6 +62,7 @@ class ConceptScrubber:
         self.jev_model = jev_model
         self.llm_model = llm_model
         self.cache_dir = cache_dir
+        self.max_workers = max_workers
         self._openrouter_api_key = openrouter_api_key
         self._openai_api_key = openai_api_key
         self.eraser = _ERASERS[method](**eraser_kwargs)
@@ -75,10 +76,12 @@ class ConceptScrubber:
                 self._labeler = LLMConceptLabeler(
                     self.concept, n_questions=self.n_questions, llm_model=self.llm_model,
                     jev_model=self.jev_model, openai_api_key=self._openai_api_key,
-                    openrouter_api_key=self._openrouter_api_key, cache_dir=self.cache_dir)
+                    openrouter_api_key=self._openrouter_api_key, cache_dir=self.cache_dir,
+                    max_workers=self.max_workers)
             else:
                 self._labeler = JevLabeler(self.concept, model=self.jev_model,
-                                           api_key=self._openrouter_api_key, cache_dir=self.cache_dir)
+                                           api_key=self._openrouter_api_key, cache_dir=self.cache_dir,
+                                           max_workers=self.max_workers)
         return self._labeler
 
     def _labels_for(self, X, texts, labels) -> np.ndarray:
