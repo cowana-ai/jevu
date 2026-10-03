@@ -64,6 +64,30 @@ def test_terse_concept_expands_via_llm(tmp_path):
     assert lab.score(["a woman led"]).shape == (1, 2)
 
 
+def test_auto_expand_lets_llm_choose_count(tmp_path):
+    import types, httpx
+    # LLM returns a variable-length list + a cardinality field (auto mode)
+    body = json.dumps({"cardinality": "identity",
+                       "questions": ["Does the text refer to a nurse?", "Does the text refer to a teacher?",
+                                     "Does the text refer to an engineer?"]})
+    llm = types.SimpleNamespace(chat=types.SimpleNamespace(completions=types.SimpleNamespace(
+        create=lambda **kw: types.SimpleNamespace(choices=[types.SimpleNamespace(
+            message=types.SimpleNamespace(content=body))]))))
+    jev = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"answers": {"q1": {"noul": 0.3}}})))
+    lab = LLMConceptLabeler("occupation", n_questions="auto", max_questions=24,
+                            llm_client=llm, jev_client=jev, openai_api_key="k",
+                            openrouter_api_key="k", cache_dir=str(tmp_path))
+    qs = lab.questions()
+    assert len(qs) == 3                      # LLM chose the count, not a fixed n
+    assert lab.score(["a nurse"]).shape == (1, 3)
+
+
+def test_bad_n_questions():
+    import pytest
+    with pytest.raises(ValueError):
+        LLMConceptLabeler("x", n_questions=0)
+
+
 def test_explicit_questions_skip_llm():
     lab = LLMConceptLabeler("gender", questions=["Does the text refer to a woman?"])
     assert lab.questions() == ["Does the text refer to a woman?"]   # no client needed

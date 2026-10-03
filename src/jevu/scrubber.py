@@ -35,9 +35,10 @@ class ConceptScrubber:
     concept : the concept to erase. A yes/no question when ``expand=False``; a high-level
         attribute (e.g. ``"gender"``) when ``expand=True``.
     method : ``"leace"`` (default, closed-form, minimal-damage) or ``"inlp"`` (iterative).
-    expand : if True, an LLM expands ``concept`` into ``n_questions`` sub-questions and the whole
-        multi-dimensional concept is erased at once.
-    n_questions : number of sub-questions when ``expand=True``.
+    expand : ``False`` (score the concept as one question), ``True`` (LLM expands into exactly
+        ``n_questions`` sub-questions), or ``"auto"`` (the LLM decides how many -- one for a binary
+        concept like gender, a covering set only for a many-valued identity like occupation).
+    n_questions : number of sub-questions when ``expand=True``; the cap when ``expand="auto"``.
     labeler : object with ``.score(texts) -> (n,) or (n, k)``; overrides ``concept``/``expand``.
     jev_model, llm_model : model ids for JEV scoring / concept expansion.
     cache_dir : shared on-disk cache for JEV scores and concept expansions.
@@ -46,7 +47,7 @@ class ConceptScrubber:
     """
 
     def __init__(self, concept: Optional[str] = None, method: str = "leace", *,
-                 expand: bool = False, n_questions: int = 6, labeler=None,
+                 expand=False, n_questions: int = 6, max_questions: int = 24, labeler=None,
                  jev_model: str = "typesafe/jev-1.13", llm_model: str = "gpt-4o-mini",
                  cache_dir: Optional[str] = None, max_workers: int = 8,
                  openrouter_api_key: Optional[str] = None,
@@ -58,6 +59,7 @@ class ConceptScrubber:
         self.method = method
         self.expand = expand
         self.n_questions = n_questions
+        self.max_questions = max_questions
         self._labeler = labeler
         self.jev_model = jev_model
         self.llm_model = llm_model
@@ -73,9 +75,10 @@ class ConceptScrubber:
                 raise ValueError("no labels given and no concept/labeler set; "
                                  "pass concept=..., labeler=..., or labels=...")
             if self.expand:
+                nq = "auto" if self.expand == "auto" else self.n_questions
                 self._labeler = LLMConceptLabeler(
-                    self.concept, n_questions=self.n_questions, llm_model=self.llm_model,
-                    jev_model=self.jev_model, openai_api_key=self._openai_api_key,
+                    self.concept, n_questions=nq, max_questions=self.max_questions,
+                    llm_model=self.llm_model, jev_model=self.jev_model, openai_api_key=self._openai_api_key,
                     openrouter_api_key=self._openrouter_api_key, cache_dir=self.cache_dir,
                     max_workers=self.max_workers)
             else:

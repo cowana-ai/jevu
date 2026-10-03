@@ -45,6 +45,15 @@ print(scrubber.concept_questions_)          # the sub-questions the LLM generate
 print(scrubber.audit(X, texts=texts))       # {'concept_auc_before':…, 'after':…, 'n_concepts': 6}
 ```
 
+**Let the LLM decide how many** with `expand="auto"`: it judges the concept's cardinality and uses the
+*fewest* questions needed — **1–2 for a binary concept** (gender, sentiment) so it's fast, a covering
+set only for a **many-valued identity** (occupation, topic). Fewer questions = fewer JEV calls:
+
+```python
+ConceptScrubber(concept="gender",     expand="auto").fit(X, texts=texts)   # -> ~1-2 questions
+ConceptScrubber(concept="occupation", expand="auto").fit(X, texts=texts)   # -> a covering set (~15)
+```
+
 ## Install
 
 ```bash

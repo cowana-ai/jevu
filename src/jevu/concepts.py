@@ -49,6 +49,21 @@ EXPANSION_SYSTEM = (
     "strings."
 )
 
+AUTO_EXPANSION_SYSTEM = (
+    "You convert an attribute that should be removed from text embeddings into the SMALLEST set of "
+    "yes/no DETECTION questions that reliably detects it. First judge the attribute's cardinality from "
+    "the attribute itself and the example texts:\n"
+    "- BINARY / low-dimensional (gender, sentiment, formality, 'is it a question'): ONE well-phrased "
+    "question is enough (use two only if two clearly distinct sides exist).\n"
+    "- MANY-VALUED IDENTITY (occupation, nationality, topic, product category): you need several "
+    "covering sub-category questions -- enumerate distinct categories that TOGETHER COVER the values "
+    "seen in the examples (each may be true for only a minority).\n"
+    "Use the FEWEST questions that still detect the attribute well, and never more than %d.\n"
+    "Every question: a yes/no question starting like 'Does the text ...?'; answerable from the text "
+    "alone; role-neutral; no near-duplicates; and never yes (or no) for essentially every text.\n"
+    "Return a JSON object with keys 'cardinality' ('binary' or 'identity') and 'questions' (the list)."
+)
+
 
 def _digest(obj) -> str:
     return hashlib.sha256(json.dumps(obj, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
@@ -73,7 +88,7 @@ class LLMConceptLabeler:
     llm_client / jev_client : optional injected clients (for tests / custom endpoints).
     """
 
-    def __init__(self, concept: str, *, n_questions: int = 6,
+    def __init__(self, concept: str, *, n_questions=6, max_questions: int = 24,
                  questions: Optional[Sequence[str]] = None,
                  llm_model: str = "gpt-4o-mini", jev_model: str = "typesafe/jev-1.13",
                  openai_api_key: Optional[str] = None, openrouter_api_key: Optional[str] = None,
@@ -81,8 +96,11 @@ class LLMConceptLabeler:
                  max_workers: int = 8, progress: bool = True):
         if not concept or not concept.strip():
             raise ValueError("concept must be a non-empty string")
+        if n_questions != "auto" and not (isinstance(n_questions, int) and n_questions >= 1):
+            raise ValueError("n_questions must be a positive int or 'auto'")
         self.concept = concept.strip()
-        self.n_questions = n_questions
+        self.n_questions = n_questions          # int (fixed count) or 'auto' (LLM decides)
+        self.max_questions = max_questions      # cap when n_questions == 'auto'
         self._questions = [q.strip() for q in questions] if questions else None
         self.llm_model = llm_model
         self.jev_model = jev_model
@@ -97,11 +115,13 @@ class LLMConceptLabeler:
         self.progress = progress
 
     def _generate(self, texts: Optional[Sequence[str]]) -> list:
+        auto = self.n_questions == "auto"
         evidence = {"attribute_to_erase": self.concept}
         if texts:
             evidence["example_texts"] = list(texts)[:20]
+        system = AUTO_EXPANSION_SYSTEM % self.max_questions if auto else EXPANSION_SYSTEM % self.n_questions
         messages = [
-            {"role": "system", "content": EXPANSION_SYSTEM % self.n_questions},
+            {"role": "system", "content": system},
             {"role": "user", "content": "Generate the questions.\n" + json.dumps(evidence, ensure_ascii=False)},
         ]
         request = {"model": self.llm_model, "messages": messages, "response_format": {"type": "json_object"}}
@@ -115,13 +135,18 @@ class LLMConceptLabeler:
             from openai import OpenAI
             client = OpenAI(api_key=self.openai_api_key, timeout=90)
         resp = client.chat.completions.create(**request)
-        qs = json.loads(resp.choices[0].message.content)["questions"]
-        qs = [q.strip() for q in qs if isinstance(q, str) and q.strip()]
-        qs = list(dict.fromkeys(qs))[: self.n_questions]
+        body = json.loads(resp.choices[0].message.content)
+        qs = [q.strip() for q in body["questions"] if isinstance(q, str) and q.strip()]
+        qs = list(dict.fromkeys(qs))
+        qs = qs[: self.max_questions] if auto else qs[: self.n_questions]
         if not qs:
             raise ValueError("LLM returned no usable questions")
+        if auto:
+            logger.info("auto-expand judged %r as %s -> %d question(s)",
+                        self.concept, body.get("cardinality", "?"), len(qs))
         if path:
-            path.write_text(json.dumps({"concept": self.concept, "questions": qs}, ensure_ascii=False))
+            path.write_text(json.dumps({"concept": self.concept, "cardinality": body.get("cardinality"),
+                                        "questions": qs}, ensure_ascii=False))
         return qs
 
     def questions(self, texts: Optional[Sequence[str]] = None) -> list:
