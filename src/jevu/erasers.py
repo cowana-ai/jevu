@@ -15,7 +15,11 @@ embeddings on ``transform`` -- so you fit once and scrub a stream in production.
 """
 from __future__ import annotations
 
+import logging
+
 import numpy as np
+
+logger = logging.getLogger(__name__)
 
 __all__ = ["InlpEraser", "LeaceEraser"]
 
@@ -96,6 +100,8 @@ class InlpEraser:
                 break
             self.n_iters_ += 1
         self.projection_ = P
+        logger.info("INLP erased %d concept column(s) in %d projection round(s)",
+                    Y.shape[1], self.n_iters_)
         return self
 
     def transform(self, X) -> np.ndarray:
@@ -151,6 +157,7 @@ class LeaceEraser:
         else:
             Pm = np.zeros((d, d))
         self.proj_ = W_inv @ Pm @ W                # A: the affine "erase" operator
+        logger.info("LEACE erased concept (d=%d, k=%d)", d, z.shape[1])
         return self
 
     def transform(self, X) -> np.ndarray:

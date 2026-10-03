@@ -43,3 +43,13 @@ def test_missing_key_without_cache_raises():
     lab = JevLabeler("concept?", api_key=None)
     with pytest.raises(ValueError):
         lab.score(["anything"])
+
+
+def test_progress_toggle_and_cached_needs_no_client(tmp_path):
+    # populate the cache once
+    client = _mock_client(lambda doc: 0.3)
+    JevLabeler("c?", api_key="k", client=client, cache_dir=str(tmp_path)).score(["a", "b"])
+    # now fully cached: no client, progress off -> still works
+    lab = JevLabeler("c?", api_key=None, cache_dir=str(tmp_path), progress=False)
+    import numpy as np
+    assert np.allclose(lab.score(["a", "b"]), 0.3)

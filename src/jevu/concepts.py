@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Optional, Sequence
@@ -16,6 +17,8 @@ from typing import Optional, Sequence
 import numpy as np
 
 from .labelers import JevLabeler
+
+logger = logging.getLogger(__name__)
 
 __all__ = ["LLMConceptLabeler"]
 
@@ -68,7 +71,7 @@ class LLMConceptLabeler:
                  llm_model: str = "gpt-4o-mini", jev_model: str = "typesafe/jev-1.13",
                  openai_api_key: Optional[str] = None, openrouter_api_key: Optional[str] = None,
                  cache_dir: Optional[str] = None, llm_client=None, jev_client=None,
-                 max_workers: int = 8):
+                 max_workers: int = 8, progress: bool = True):
         if not concept or not concept.strip():
             raise ValueError("concept must be a non-empty string")
         self.concept = concept.strip()
@@ -84,6 +87,7 @@ class LLMConceptLabeler:
         self.llm_client = llm_client
         self.jev_client = jev_client
         self.max_workers = max_workers
+        self.progress = progress
 
     def _generate(self, texts: Optional[Sequence[str]]) -> list:
         evidence = {"attribute_to_erase": self.concept}
@@ -117,15 +121,20 @@ class LLMConceptLabeler:
         """The yes/no questions this concept expands to (generated once, then cached)."""
         if self._questions is None:
             self._questions = self._generate(texts)
+            logger.info("expanded concept %r into %d questions: %s",
+                        self.concept, len(self._questions), self._questions)
         return self._questions
 
     def score(self, texts: Sequence[str]) -> np.ndarray:
         """Return an ``(n_texts, n_questions)`` matrix of JEV scores, one column per sub-question."""
         texts = list(texts)
+        qs = self.questions(texts)
         cols = []
-        for q in self.questions(texts):
+        for i, q in enumerate(qs):
+            logger.info("scoring sub-concept %d/%d: %r", i + 1, len(qs), q)
             lab = JevLabeler(q, model=self.jev_model, api_key=self.openrouter_api_key,
                              cache_dir=str(self.cache_dir) if self.cache_dir else None,
-                             client=self.jev_client, max_workers=self.max_workers)
+                             client=self.jev_client, max_workers=self.max_workers,
+                             progress=self.progress)
             cols.append(lab.score(texts))
         return np.column_stack(cols)

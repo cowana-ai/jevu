@@ -91,6 +91,18 @@ for fairness — measure it with `audit()` / `tpr_gap()`.
 - `JevLabeler(concept, cache_dir=..., client=...)` — `.score(texts) -> [0,1]`, `.label(texts) -> {0,1}`.
 - `concept_auc(X, y)`, `erasure_report(X_before, X_after, y)`, `tpr_gap(true, pred, group)` — auditing.
 
+## Progress & logging
+
+JEV scoring shows a `tqdm` progress bar by default (disable with `progress=False` on
+`ConceptScrubber(..., )` components, or it silently no-ops if `tqdm` isn't installed). The library
+logs to the `jevu` logger via Python's standard `logging` and attaches a `NullHandler`, so it's quiet
+until you opt in:
+
+```python
+import logging
+logging.basicConfig(level=logging.INFO)   # see labeling / expansion / erasure details
+```
+
 ## When to use JEV vs. your own labels
 
 The erasure math only needs *a* label per example. If you **already have** the attribute labeled,

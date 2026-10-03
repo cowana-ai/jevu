@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -16,6 +17,10 @@ from pathlib import Path
 from typing import Optional, Sequence
 
 import numpy as np
+
+from ._util import progress
+
+logger = logging.getLogger(__name__)
 
 __all__ = ["JevLabeler"]
 
@@ -54,6 +59,7 @@ class JevLabeler:
         timeout: float = 90.0,
         client=None,
         scoring_rule: str = DEFAULT_SCORING_RULE,
+        progress: bool = True,
     ):
         if not concept or not concept.strip():
             raise ValueError("concept must be a non-empty question")
@@ -68,6 +74,7 @@ class JevLabeler:
         self.timeout = timeout
         self._client = client
         self.scoring_rule = scoring_rule
+        self.progress = progress
 
     # -- internals -------------------------------------------------------------
     def _payload(self, text: str) -> dict:
@@ -127,17 +134,26 @@ class JevLabeler:
     def score(self, texts: Sequence[str]) -> np.ndarray:
         """Return a calibrated concept score in ``[0, 1]`` for each text."""
         texts = list(texts)
-        client = self._client or self._make_client()
-        close = self._client is None
+        n_missing = sum(
+            1 for t in texts
+            if not (self.cache_dir and self._cache_path(self._payload(t)).exists())
+        )
+        logger.info("scoring %d texts (%d cached, %d to fetch) for concept %r",
+                    len(texts), len(texts) - n_missing, n_missing, self.concept)
+        # Only build an HTTP client if something actually needs fetching.
+        client = (self._client or self._make_client()) if n_missing else None
+        close = n_missing and self._client is None
         try:
             out: dict[int, float] = {}
             with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
                 futs = {pool.submit(self._score_one, t, client): i for i, t in enumerate(texts)}
-                for fut in as_completed(futs):
+                desc = f"JEV: {self.concept[:40]}"
+                for fut in progress(as_completed(futs), total=len(texts), desc=desc,
+                                    enabled=self.progress and len(texts) > 1):
                     out[futs[fut]] = fut.result()
             return np.array([out[i] for i in range(len(texts))], dtype=float)
         finally:
-            if close and hasattr(client, "close"):
+            if close and client is not None and hasattr(client, "close"):
                 client.close()
 
     def label(self, texts: Sequence[str], threshold: float = 0.5) -> np.ndarray:
