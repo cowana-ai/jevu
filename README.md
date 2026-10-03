@@ -100,7 +100,10 @@ until you opt in:
 
 ```python
 import logging
-logging.basicConfig(level=logging.INFO)   # see labeling / expansion / erasure details
+logging.basicConfig(level=logging.INFO)    # see labeling / expansion / erasure details
+# keep jevu logs but silence the OpenAI/OpenRouter (httpx) request spam:
+for _n in ("httpx", "httpcore", "openai"):
+    logging.getLogger(_n).setLevel(logging.WARNING)
 ```
 
 ## Performance
