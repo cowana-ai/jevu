@@ -82,6 +82,27 @@ def test_auto_expand_lets_llm_choose_count(tmp_path):
     assert lab.score(["a nurse"]).shape == (1, 3)
 
 
+def test_select_k_greedy_keeps_k_questions():
+    # a pool of 4 questions where 2 are redundant copies; select_k=2 should keep 2
+    rng = np.random.default_rng(0)
+    n, d = 300, 16
+    a = rng.integers(0, 2, n); b = rng.integers(0, 2, n)
+    X = rng.standard_normal((n, d)); X[:, 0] += 4.0 * a; X[:, 1] += 4.0 * b
+
+    class PoolLabeler:
+        _qs = ["q_a", "q_a_copy", "q_b", "q_noise"]
+        def questions(self, texts=None): return self._qs
+        def score(self, texts):
+            noise = rng.standard_normal(n)
+            return np.column_stack([a, a, b, (noise > 0).astype(int)]).astype(float)
+
+    scr = ConceptScrubber(method="leace", expand=True, labeler=PoolLabeler(), select_k=2)
+    scr.fit(X, texts=["t"] * n)
+    assert len(scr.selected_questions_) == 2
+    assert scr.labels_.shape[1] == 2            # eraser fit on the 2 kept questions
+    assert scr.concept_questions_ == PoolLabeler._qs
+
+
 def test_bad_n_questions():
     import pytest
     with pytest.raises(ValueError):

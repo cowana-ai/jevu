@@ -13,6 +13,7 @@ either the raw texts (so JEV can label the concept) or your own labels::
 """
 from __future__ import annotations
 
+import logging
 from typing import Optional, Sequence
 
 import numpy as np
@@ -22,9 +23,34 @@ from .concepts import LLMConceptLabeler
 from .erasers import InlpEraser, LeaceEraser
 from .labelers import JevLabeler
 
+logger = logging.getLogger(__name__)
+
 __all__ = ["ConceptScrubber"]
 
 _ERASERS = {"leace": LeaceEraser, "inlp": InlpEraser}
+
+
+def _greedy_select(Z: np.ndarray, k: int, questions: Sequence[str]) -> list:
+    """Greedy forward selection: pick the k questions whose columns best reconstruct the whole
+    pool of scores Z (label-free). Each step adds the column that most reduces the residual of
+    least-squares reconstructing Z from the selected columns. Logs every pick."""
+    Zc = Z - Z.mean(axis=0)
+    P = Zc.shape[1]
+    selected: list = []
+    for step in range(min(k, P)):
+        best = None
+        for c in range(P):
+            if c in selected:
+                continue
+            A = Zc[:, selected + [c]]
+            coef, *_ = np.linalg.lstsq(A, Zc, rcond=None)
+            resid = float(np.linalg.norm(Zc - A @ coef))
+            if best is None or resid < best[0]:
+                best = (resid, c)
+        selected.append(best[1])
+        logger.info("greedy select %d/%d: %r (reconstruction residual %.3f)",
+                    step + 1, k, questions[best[1]], best[0])
+    return selected
 
 
 class ConceptScrubber:
@@ -39,6 +65,9 @@ class ConceptScrubber:
         ``n_questions`` sub-questions), or ``"auto"`` (the LLM decides how many -- one for a binary
         concept like gender, a covering set only for a many-valued identity like occupation).
     n_questions : number of sub-questions when ``expand=True``; the cap when ``expand="auto"``.
+    select_k : if set (with expansion), greedily keep only the ``select_k`` questions that best
+        reconstruct the full pool, and erase just those -- a cheap, reusable eraser. The picks are
+        logged and stored in ``selected_questions_``.
     labeler : object with ``.score(texts) -> (n,) or (n, k)``; overrides ``concept``/``expand``.
     jev_model, llm_model : model ids for JEV scoring / concept expansion.
     cache_dir : shared on-disk cache for JEV scores and concept expansions.
@@ -47,7 +76,8 @@ class ConceptScrubber:
     """
 
     def __init__(self, concept: Optional[str] = None, method: str = "leace", *,
-                 expand=False, n_questions: int = 6, max_questions: int = 24, labeler=None,
+                 expand=False, n_questions: int = 6, max_questions: int = 24,
+                 select_k: Optional[int] = None, labeler=None,
                  jev_model: str = "typesafe/jev-1.13", llm_model: str = "gpt-4o-mini",
                  cache_dir: Optional[str] = None, max_workers: int = 8,
                  openrouter_api_key: Optional[str] = None,
@@ -60,6 +90,7 @@ class ConceptScrubber:
         self.expand = expand
         self.n_questions = n_questions
         self.max_questions = max_questions
+        self.select_k = select_k
         self._labeler = labeler
         self.jev_model = jev_model
         self.llm_model = llm_model
@@ -95,6 +126,15 @@ class ConceptScrubber:
             labels = labeler.score(texts)
             if hasattr(labeler, "questions"):           # record LLM-expanded sub-questions, if any
                 self.concept_questions_ = labeler.questions(texts)
+            labels = np.asarray(labels, dtype=float)
+            # keep only the greedily-selected questions, if requested
+            if self.select_k and labels.ndim == 2 and self.select_k < labels.shape[1] \
+                    and getattr(self, "concept_questions_", None):
+                idx = _greedy_select(labels, self.select_k, self.concept_questions_)
+                self.selected_questions_ = [self.concept_questions_[i] for i in idx]
+                logger.info("kept %d/%d questions: %s",
+                            len(idx), labels.shape[1], self.selected_questions_)
+                labels = labels[:, idx]
         y = np.asarray(labels, dtype=float)
         if len(y) != len(X):
             raise ValueError("labels/texts and embeddings must have the same length")

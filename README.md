@@ -45,6 +45,17 @@ print(scrubber.concept_questions_)          # the sub-questions the LLM generate
 print(scrubber.audit(X, texts=texts))       # {'concept_auc_before':…, 'after':…, 'n_concepts': 6}
 ```
 
+**Keep only the most useful few** with `select_k`: over-generate a pool, then greedily keep the
+`select_k` questions that best reconstruct it — a cheap, reusable eraser. The picks are logged and
+stored in `scrubber.selected_questions_`:
+
+```python
+scrubber = ConceptScrubber(concept="occupation", expand=True, n_questions=20, select_k=3)
+scrubber.fit(X, texts=texts)
+print(scrubber.selected_questions_)         # the 3 the greedy search kept
+# INFO jevu.scrubber: greedy select 1/3: '...'  (then deploy just these 3 on new data)
+```
+
 **Let the LLM decide how many** with `expand="auto"`: it judges the concept's cardinality and uses the
 *fewest* questions needed — **1–2 for a binary concept** (gender, sentiment) so it's fast, a covering
 set only for a **many-valued identity** (occupation, topic). Fewer questions = fewer JEV calls:
