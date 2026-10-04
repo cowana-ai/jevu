@@ -43,7 +43,7 @@ def _greedy_select(Z: np.ndarray, k: int, questions: Sequence[str]) -> list:
             if c in selected:
                 continue
             A = Zc[:, selected + [c]]
-            coef, *_ = np.linalg.lstsq(A, Zc, rcond=None)
+            coef = np.linalg.pinv(A) @ Zc           # A⁺ Z: least-squares coeffs via SVD-based pseudoinverse
             resid = float(np.linalg.norm(Zc - A @ coef))
             if best is None or resid < best[0]:
                 best = (resid, c)
