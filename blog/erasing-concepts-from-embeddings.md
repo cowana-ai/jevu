@@ -112,7 +112,43 @@ pick c that minimizes   ‖Z − A A⁺ Z‖_F
 where `A⁺` is the Moore–Penrose pseudoinverse, so `A A⁺ Z` is the orthogonal projection of every
 column of `Z` onto the span of the selected columns, and `‖·‖_F` is the Frobenius norm (total
 residual over all questions). Intuitively: *"which few questions let me linearly predict all the
-others?"* Three usually suffice:
+others?"*
+
+<details>
+<summary><b>Why <code>A A⁺</code> is a projection (the SVD view)</b></summary>
+
+The cleanest way to see what `A A⁺` *does* is through the SVD of the selected columns,
+`A = U Σ Vᵀ`, where `U`'s columns are an **orthonormal basis of `col(A)`** (the subspace the selected
+questions span). The pseudoinverse is `A⁺ = V Σ⁻¹ Uᵀ`, so the scaling and the input-side rotation
+cancel and you're left with just:
+
+```
+A A⁺ = (U Σ Vᵀ)(V Σ⁻¹ Uᵀ) = U (Σ Σ⁻¹) Uᵀ = U Uᵀ
+```
+
+So `A A⁺ = U Uᵀ`, the standard **orthogonal projector onto `col(A)`**. Note `U` and `U Uᵀ` are
+different objects doing different jobs:
+
+- **`U` (shape `n × r`) is a *basis*** — a set of orthonormal axes *describing* the subspace. You
+  can't drop an arbitrary vector onto the subspace by multiplying by `U`; its input is coordinates,
+  not an ambient vector.
+- **`U Uᵀ` (shape `n × n`) is a *transformation*** — the machine that *performs* the projection.
+  `Uᵀ` reads a vector's coordinates along the orthonormal axes (`UᵀU = I`), and `U` rebuilds them,
+  so `U Uᵀ x = Σᵢ (uᵢᵀx) uᵢ` is `x` flattened straight down onto the subspace.
+
+Picture `col(A)` as a tabletop inside a room: `U` is two meter-sticks taped to the table marking its
+axes; `U Uᵀ` is a laser in the ceiling that, for any object `x` in the room, points to the spot on the
+table directly beneath it. It's idempotent (`(U Uᵀ)² = U Uᵀ` — projecting twice changes nothing) and
+symmetric (`(U Uᵀ)ᵀ = U Uᵀ`), the two hallmarks of an orthogonal projector. (If the selected columns
+ever spanned *all* of `ℝⁿ`, `U` would be square and `U Uᵀ = I` — projecting onto everything is a
+no-op; here `r < n`, so it genuinely flattens.)
+
+In code we only have `A`, not its orthonormal basis `U`, so `np.linalg.pinv` runs the SVD for us and
+`A A⁺` reduces to exactly this `U Uᵀ` projection.
+
+</details>
+
+Three questions usually suffice:
 
 ```python
 scrubber = ConceptScrubber(concept="occupation", expand=True, n_questions=15,
