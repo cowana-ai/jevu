@@ -29,7 +29,7 @@ from jevu import ConceptScrubber
 
 X = your_model.encode(texts)                         # embeddings from ANY model
 scrubber = ConceptScrubber(concept="occupation", method="leace",  # just the bare word
-                           expand="auto")            # LLM sizes & writes the questions
+                           expand=True, n_questions=15)            # LLM writes a pool of 15 questions
 scrubber.fit(X, texts=texts)                         # expand -> score -> select -> fit the eraser
 X_clean = scrubber.transform(X_new)                  # erase it from new embeddings
 
@@ -64,18 +64,21 @@ is meaningless). So an LLM first **expands** it into a set of concrete, discrimi
 questions that *together cover* the concept's facets:
 
 ```python
-scrubber = ConceptScrubber(concept="occupation", expand="auto")  # or expand=True, n_questions=15
+scrubber = ConceptScrubber(concept="occupation", expand=True, n_questions=15)
 scrubber.fit(X, texts=texts)
 scrubber.concept_questions_
 # ['Does the text describe a healthcare professional?',
 #  'Does the text describe an educator or academic?',
 #  'Does the text describe an artist or performer?',
-#  'Does the text describe a legal professional?', ...]   # ~15 covering questions
+#  'Does the text describe a legal professional?', ...]   # 15 covering questions
 ```
 
-With `expand="auto"` the LLM also *sizes* the set from the concept's cardinality — **1–2 questions
-for a binary attribute** (gender, sentiment), a **covering set (~15) for a many-valued identity**
-(occupation, topic). Fewer questions = fewer scoring calls downstream.
+We deliberately **over-generate a pool of `n_questions=15`** here — more than we'll ultimately erase
+with. That redundancy is what Step 3 selects *from*: a larger pool means better coverage of the
+concept's facets, and the greedy selector then prunes it down to the few non-overlapping questions
+that matter. (If you'd rather let the LLM *size* the set itself — 1–2 for a binary attribute like
+gender, a covering set for an identity — pass `expand="auto"`; but for the select stage below you want
+an explicit pool, so we fix `n_questions=15`.)
 
 ### Step 2 — Score a sample with JEV (build the matrix `Z`)
 
@@ -291,8 +294,9 @@ texts are free.
 1. **You can erase any concept you can name** — no labels, no retraining the embedding model. Bring
   embeddings from any model plus one English sentence.
 2. **Match the number of directions to the concept's rank.** Binary attributes (gender) need ~1
-  question; many-valued identities (occupation) need a covering set (~k for a k-way concept). Use
-   `expand="auto"` and let the LLM size it.
+  question; many-valued identities (occupation) need a covering set (~k for a k-way concept).
+   Over-generate a pool (`expand=True, n_questions=15`) and let Step 3 prune it — or let the LLM size
+   it directly with `expand="auto"`.
 3. **Zero-shot JEV labels ≈ ground-truth labels for erasure.** Occupation erased to 0.322 vs. a
   0.304 label ceiling; gender to chance.
 4. **Erasure is selective.** Removing one concept leaves the others readable — you trade a little
