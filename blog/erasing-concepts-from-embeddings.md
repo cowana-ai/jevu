@@ -20,19 +20,21 @@ only works for attributes you already have labels for.
 **jevu** takes a different route:
 
 > Bring **(1) your embeddings** (from any model), **(2) your raw texts**, and **(3) a concept
-> described in plain English**. An LLM scorer labels the concept per text, and a provable linear
-> method removes it — leaving everything else intact.
+> named in plain English** — even a single ambiguous word like `"gender"` or `"occupation"`. An LLM
+> turns the word into concrete questions, a scorer labels each one per text, and **LEACE** removes
+> the whole thing in closed form — leaving everything else intact.
 
 ```python
 from jevu import ConceptScrubber
 
-X = your_model.encode(texts)                        # embeddings from ANY model
-scrubber = ConceptScrubber(concept="Does the text describe a woman?", method="leace")
-scrubber.fit(X, texts=texts)                        # JEV labels the concept, fits the eraser
-X_clean = scrubber.transform(X_new)                 # erase it from new embeddings
+X = your_model.encode(texts)                         # embeddings from ANY model
+scrubber = ConceptScrubber(concept="occupation", method="leace",  # just the bare word
+                           expand="auto")            # LLM sizes & writes the questions
+scrubber.fit(X, texts=texts)                         # expand -> score -> select -> fit the eraser
+X_clean = scrubber.transform(X_new)                  # erase it from new embeddings
 
 scrubber.audit(X, texts=texts)
-# {'concept_auc_before': 1.00, 'concept_auc_after': 0.55, 'n_concepts': 1}
+# {'concept_auc_before': 0.65, 'concept_auc_after': 0.32, 'n_concepts': 15}
 ```
 
 No annotation. No retraining of the embedding model. Just numpy and scikit-learn plus a scorer.
@@ -41,75 +43,73 @@ No annotation. No retraining of the embedding model. Just numpy and scikit-learn
 
 
 
-## The method, in four layers
+## The method: a four-step pipeline
 
+You hand in one ambiguous word — `"gender"` or `"occupation"` — and get back an eraser. Under the
+hood that word flows through four steps: **expand → score → select → erase**. We'll use `"occupation"`
+throughout.
 
+A key piece of intuition sets up the whole thing:
 
-### 1. Label the concept zero-shot (JEV)
+> **Erasing a `k`-dimensional concept needs ~`k` directions to project out.**
 
-A concept is just a yes/no question — `"Does the text describe a woman?"`. We score every text
-against it with **JEV**, a calibrated per-question scorer that returns a number in `[0, 1]`. No
-training set, no threshold tuning: one sentence replaces an annotation campaign, and the labels
-come out calibrated. If you *already* have labels, skip JEV entirely — the erasure math only needs
-*a* label per example.
+"Gender" is essentially binary — it lives on *one* direction, so one question can carry it. A 28-way
+occupation *identity* lives in a ~27-dimensional subspace — no single question can capture it. That's
+why an ambiguous word has to become *several* questions before we can erase it.
 
-### 2. Erase the linear signal (LEACE / INLP)
+### Step 1 — Expand the word into questions (LLM)
 
-A concept `c` is **linearly encoded** in an embedding `x` if a linear probe reads it:
-`p(c|x) = σ(wᵀx + b)`. The unit direction `û = w/‖w‖` is the axis the concept lives on. Split
-`x = x∥ + x⊥` into its component along `û` and the rest. The projection
-
-```
-P = I − û ûᵀ        x' = P x = x − (ûᵀx) û
-```
-
-zeroes the concept coordinate: `ûᵀx' = ûᵀx − (ûᵀx)(ûᵀû) = 0`. A probe that relied on `û` now reads
-a constant — the concept is unreadable along that axis.
-
-- **INLP** (*Null It Out*, Ravfogel et al. ACL 2020) repeats {fit probe → project out its
-direction} until no linear probe beats chance. Robust and iterative; can over-project if run too
-long.
-- **LEACE** (*Perfect Linear Concept Erasure*, Belrose et al. NeurIPS 2023, the default) is the
-closed-form optimum: an affine map that makes `cov(r(X), c) = 0` **exactly**, with the least
-squared change to `x`. One shot, minimal collateral damage.
-
-
-
-### 3. Handle multi-faceted concepts (LLM expansion)
-
-"Gender" is one direction. "Occupation" is not. A key piece of intuition:
-
-> **Erasing a k-dimensional concept needs ~k directions to project out.**
-
-Gender is essentially binary — one direction. A 28-way occupation *identity* lives in a ~27-dim
-subspace. You can't kill it with a single question. So for a high-level attribute you pass the bare
-word and let an LLM **expand** it into a covering set of concrete, discriminative yes/no questions:
+A bare noun like `"occupation"` is not something you can score directly ("is this text occupation-y?"
+is meaningless). So an LLM first **expands** it into a set of concrete, discriminative yes/no
+questions that *together cover* the concept's facets:
 
 ```python
-scrubber = ConceptScrubber(concept="occupation", expand=True, n_questions=15)
+scrubber = ConceptScrubber(concept="occupation", expand="auto")  # or expand=True, n_questions=15
 scrubber.fit(X, texts=texts)
-print(scrubber.concept_questions_)   # ["Does the text describe a healthcare professional?", ...]
+scrubber.concept_questions_
+# ['Does the text describe a healthcare professional?',
+#  'Does the text describe an educator or academic?',
+#  'Does the text describe an artist or performer?',
+#  'Does the text describe a legal professional?', ...]   # ~15 covering questions
 ```
 
-Or let the LLM decide the count with `expand="auto"` — **1–2 questions for a binary concept**, a
-covering set (~15) for a many-valued identity. Fewer questions = fewer scoring calls.
+With `expand="auto"` the LLM also *sizes* the set from the concept's cardinality — **1–2 questions
+for a binary attribute** (gender, sentiment), a **covering set (~15) for a many-valued identity**
+(occupation, topic). Fewer questions = fewer scoring calls downstream.
 
-### 4. Keep only the questions that matter (top-k selection)
+### Step 2 — Score a sample with JEV (build the matrix `Z`)
 
-Over-generating a pool of 15 questions is good for *coverage*, but you rarely need all 15 to erase —
-many overlap. So after expansion we **greedily select the** `k` **questions that best reconstruct the
-whole pool**, and erase just those. This is a classic *column subset selection* done **label-free**:
-we never look at the occupation labels, only at the matrix of JEV scores.
-
-The greedy objective, concretely: let `Z` be the `(n_texts × 15)` matrix of scores (mean-centered).
-Forward selection adds, one at a time, the question whose column most reduces the residual of
-least-squares reconstructing the *whole* pool from the questions picked so far:
+Each question is now scorable. **JEV** is a calibrated per-question scorer: give it a text and a
+yes/no question and it returns a number in `[0, 1]` — no training set, no threshold tuning. We run it
+over a **sample of `n` rows × the `p` questions** to build a score matrix
 
 ```
-pick the column c that minimizes   ‖Z − A·A⁺·Z‖_F ,   where A = columns selected ∪ {c}
+Z ∈ ℝ^{n × p},   Z[i, j] = JEV(text_i, question_j) ∈ [0, 1]
 ```
 
-Each step logs its pick. Three questions typically suffice:
+This `Z` is a little interpretable embedding: every column is a *named* axis. We sample (e.g. 250
+rows) rather than scoring everything, because the next step only needs enough rows to *rank* the
+questions — not the full dataset.
+
+### Step 3 — Select the `k` questions that matter (greedy, label-free)
+
+A pool of 15 questions is good for coverage, but many overlap ("healthcare professional" and "works
+in medicine" carry nearly the same column). We keep the `k` that best **reconstruct the whole pool**
+— a classic *column subset selection*, done **label-free**: we look only at `Z`, never at the true
+occupation labels.
+
+Concretely, center `Z` and greedily, one at a time, add the question whose column most reduces the
+least-squares reconstruction residual of the *entire* pool from the columns chosen so far. With `A`
+the matrix of already-selected columns plus a candidate `c`:
+
+```
+pick c that minimizes   ‖Z − A A⁺ Z‖_F
+```
+
+where `A⁺` is the Moore–Penrose pseudoinverse, so `A A⁺ Z` is the orthogonal projection of every
+column of `Z` onto the span of the selected columns, and `‖·‖_F` is the Frobenius norm (total
+residual over all questions). Intuitively: *"which few questions let me linearly predict all the
+others?"* Three usually suffice:
 
 ```python
 scrubber = ConceptScrubber(concept="occupation", expand=True, n_questions=15,
@@ -121,14 +121,52 @@ scrubber.selected_questions_
 #  'Does the text indicate an artist or performer?']
 ```
 
-Why this is cheap: `select_sample=250` scores the *pool* on only 250 rows (selection is a
-low-dimensional ranking problem — it doesn't need many rows), picks the `k` winners, then scores just
-those `k` on the full data to fit the eraser. Cost drops from `pool × n` to
-`pool × select_sample + k × n`. The selected questions are a small, **reusable** eraser you can deploy
-on new data.
+Then only those `k` winners are scored on the *full* dataset — cost drops from `pool × N` to
+`pool × sample + k × N` — and the result is a small, **reusable** eraser you can apply to new data.
+*Which* data those `k` questions end up cleaning is a story in itself — see the next section.
 
-The *consequence* of selecting by reconstruction — what those `k` questions actually end up cleaning —
-is the subject of the next two sections.
+### Step 4 — Erase with LEACE (the linear algebra)
+
+Now we have embeddings `X ∈ ℝ^{N × d}` and the selected concept scores `Z ∈ ℝ^{N × k}`. **LEACE**
+(*LEAst-squares Concept Erasure*, Belrose et al. NeurIPS 2023) finds the affine map `r(x)` that makes
+the concept **linearly unreadable** — `cov(r(X), Z) = 0` *exactly* — while changing `x` as little as
+possible (minimum expected squared distance). Here's why it looks the way it does.
+
+**Warm-up: one direction.** Suppose the concept were a single unit direction `û` in `x`. Projecting
+it out is
+
+```
+P = I − û ûᵀ,     x' = P x = x − (ûᵀx) û
+```
+
+This zeroes the concept coordinate: `ûᵀx' = ûᵀx − (ûᵀx)(ûᵀû) = 0` (since `ûᵀû = 1`). A probe that
+relied on `û` now reads a constant. The catch: projecting along the *raw* axis `û` is only
+minimal-damage if the embedding's coordinates are uncorrelated and equal-variance. Real embeddings
+are not — some directions carry far more variance than others — so LEACE first **whitens**.
+
+**The full map, in three moves:**
+
+1. **Whiten.** Let `Σ = cov(X)` be the embedding covariance. The whitening transform `W = Σ^{-1/2}`
+   maps `X` to a space where `cov(WX) = I` — all directions equal-variance, so ordinary orthogonal
+   projection *is* the minimal-damage operation.
+
+2. **Project out the concept subspace.** In whitened space the concept lives in the column space of
+   `W Σ_{XZ}`, where `Σ_{XZ} = cov(X, Z)` is the cross-covariance (how each embedding direction
+   co-varies with each concept question). Take an orthonormal basis `U` of that column space and
+   build the orthogonal-complement projector `P = I − U Uᵀ`. For a `k`-dim concept this removes `k`
+   directions — the concrete form of "erasing a `k`-dim concept needs ~`k` directions."
+
+3. **Un-whiten and re-center.** Map back with `W⁻¹ = Σ^{1/2}` and restore the mean `μ`:
+
+```
+r(x) = μ + Σ^{1/2} · P · Σ^{-1/2} · (x − μ),      P = I − U Uᵀ
+```
+
+Because the projection kills exactly the whitened concept subspace, the result provably satisfies
+`cov(r(X), Z) = 0`: **no linear probe can recover the concept** from `r(X)`. And because it's an
+orthogonal projection *in the whitened metric*, it's the least-squares-optimal such map — the
+smallest distortion of `x` that achieves erasure. One closed-form shot, no iteration. (If you only
+have hard labels instead of JEV scores, pass those as `Z` — the math is identical.)
 
 ---
 
@@ -234,11 +272,12 @@ paralegal, yoga, interior design — each a small slice needing its own theme qu
 
 ## Making it cheap
 
-The cost is the scoring calls (network-bound). Beyond the sample-then-fit trick from layer 4:
+The cost is the scoring calls (network-bound). Beyond the select-on-a-sample trick from step 3:
 
-- **Why fit on the full set at all?** Selection only needs enough rows to *rank* questions; but LEACE
-estimates a covariance in the full embedding dimension (1536), which *needs* rows to be
-well-conditioned. Scoring the `k` winners is cheap, so you get both — select on 250, fit on all.
+- **Why fit the eraser on the full set, not the sample?** Selection (step 3) only needs enough rows to
+*rank* questions; but LEACE (step 4) estimates the covariance `Σ` in the full embedding dimension
+(1536), which *needs* rows to be well-conditioned. Scoring the `k` winners is cheap, so you get both —
+select on 250, fit on all.
 - **Threaded, cached, calibrated.** All `questions × texts` cells score concurrently through one
 pooled HTTP client; every score is cached per `(model, text, question)`, so re-runs and repeated
 texts are free.
@@ -277,14 +316,14 @@ texts are free.
 pip install "jevu[jev,openai]"
 ```
 
-See the runnable notebooks in `[examples/](../examples)`: `occupation_erasure.ipynb` (top-k sweep,
+See the runnable notebooks in [`examples/`](../examples): `occupation_erasure.ipynb` (top-k sweep,
 before/after PCA, profession-coverage charts), `gender_erasure.ipynb`, and `search_debias.ipynb`
 (top-k retrieval before/after erasing gender from query + document embeddings).
 
 ### References
 
-- Ravfogel, Elazar, Gonen, Twiton, Goldberg. *Null It Out: Guarding Protected Attributes by
-Iterative Nullspace Projection.* ACL 2020. (INLP)
-- Belrose et al. *LEACE: Perfect Linear Concept Erasure in Closed Form.* NeurIPS 2023.
-- De-Arteaga et al. *Bias in Bios.* FAT 2019. (evaluation dataset)
+- Belrose, Schneider-Joseph, Ravfogel, Cotterell, Raff, Biderman. *LEACE: Perfect Linear Concept
+Erasure in Closed Form.* NeurIPS 2023.
+- De-Arteaga et al. *Bias in Bios: A Case Study of Semantic Representation Bias in a High-Stakes
+Setting.* FAT\* 2019. (evaluation dataset)
 
