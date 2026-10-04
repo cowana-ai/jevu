@@ -124,6 +124,26 @@ class ConceptScrubber:
                                            max_workers=self.max_workers)
         return self._labeler
 
+    def _score_pool(self, texts):
+        """Score the concept once -> ``(Z, questions)``. For an expanded concept ``Z`` is the full
+        ``(n, pool)`` matrix and ``questions`` is the pool; for a single concept ``Z`` is ``(n,)`` and
+        ``questions`` is ``None``. Memoized on the instance so repeated selections never re-score."""
+        labeler = self._labeler_()
+        pool = labeler.questions(texts) if hasattr(labeler, "questions") else None
+        if pool is not None and hasattr(labeler, "score_questions"):
+            Z = np.asarray(labeler.score_questions(pool, texts), dtype=float)
+        else:
+            Z = np.asarray(labeler.score(texts), dtype=float)
+        if pool is not None:
+            self.concept_questions_ = pool
+        return Z, pool
+
+    def _select(self, Z, questions, k, sample_idx=None) -> list:
+        """Greedily pick ``k`` columns of an already-scored matrix ``Z`` (no scoring). ``sample_idx``
+        restricts the greedy criterion to a subset of rows. Returns the selected column indices."""
+        M = Z if sample_idx is None else Z[sample_idx]
+        return _greedy_select(M, k, questions)
+
     def _labels_for(self, X, texts, labels) -> np.ndarray:
         if labels is None:
             if texts is None:
@@ -134,24 +154,20 @@ class ConceptScrubber:
 
             if can_select and self.select_sample and hasattr(labeler, "score_questions") \
                     and self.select_sample < len(texts):
-                # (1) score the whole pool on a small SAMPLE, (2) greedily pick k there,
-                # (3) score only the k winners on the FULL data -> fit the eraser on those.
+                # cheapest path: score the pool only on a SAMPLE, pick k, score k on the full data.
                 self.concept_questions_ = pool
                 rng = np.random.default_rng(self.random_state)
                 sub = rng.choice(len(texts), self.select_sample, replace=False)
-                sub_texts = [texts[i] for i in sub]
                 logger.info("selecting %d/%d questions on a %d-row sample", self.select_k, len(pool), len(sub))
-                Zsub = np.asarray(labeler.score_questions(pool, sub_texts), dtype=float)
-                idx = _greedy_select(Zsub, self.select_k, pool)
+                Zsub = np.asarray(labeler.score_questions(pool, [texts[i] for i in sub]), dtype=float)
+                idx = self._select(Zsub, pool, self.select_k)
                 self.selected_questions_ = [pool[i] for i in idx]
                 logger.info("kept %d/%d questions: %s", len(idx), len(pool), self.selected_questions_)
                 labels = labeler.score_questions(self.selected_questions_, texts)
             else:
-                labels = np.asarray(labeler.score(texts), dtype=float)
-                if pool is not None:
-                    self.concept_questions_ = pool
-                if can_select:                          # select on the full pool (no sampling)
-                    idx = _greedy_select(labels, self.select_k, pool)
+                labels, pool = self._score_pool(texts)      # one scoring pass
+                if can_select:
+                    idx = self._select(labels, pool, self.select_k)
                     self.selected_questions_ = [pool[i] for i in idx]
                     logger.info("kept %d/%d questions: %s", len(idx), labels.shape[1], self.selected_questions_)
                     labels = labels[:, idx]
