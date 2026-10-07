@@ -1,28 +1,38 @@
 # Erasing Concepts from Embeddings — in Plain English
 
-*How to remove gender, occupation, or any attribute you can name from off-the-shelf
-embeddings, label it zero-shot with an LLM scorer, and actually see which parts of your
-data get cleaned.*
+*You can remove gender, occupation, or any attribute you can name from off-the-shelf embeddings —
+label it zero-shot with an LLM, erase it in closed form, and actually see which parts of your data
+got cleaned.*
 
 ---
 
-## The problem
+When I reach for an off-the-shelf embedding model, I'm thinking about one thing: does it capture
+meaning well enough for my task. I'm almost never thinking about what *else* it captured along the
+way. That turns out to be the mistake.
 
-Off-the-shelf text embeddings are convenient, but they quietly encode attributes you may not
-want in a downstream model. Embed a professional bio with a standard model and a simple linear
-probe can read off the person's **gender** at ~1.00 AUC and their **occupation** at ~0.65 AUC —
-*before you do anything*. Any classifier, ranker, or recommender you build on top inherits that
-signal, and with it the bias.
+Because embeddings are good at their job, they encode far more than the thing you care about. Embed a
+professional bio with a standard model and a simple linear probe reads off the person's **gender at
+~1.00 AUC** and their **occupation at ~0.65 AUC** — *before you've trained anything*. Every
+classifier, ranker, and recommender you build on top quietly inherits that signal. And with it, the
+bias.
 
-The usual fix is a full annotation campaign plus adversarial training. That's expensive, and it
-only works for attributes you already have labels for.
+This post is about taking it back out. I wrote a small library, `jevu`, to do exactly this, and the
+part I find genuinely interesting isn't that it works — it's that it tells you, concept by concept
+and slice by slice, *what it removed*. Most debiasing methods can't.
 
-**jevu** takes a different route:
+## The usual fix is too expensive, so nobody does it
 
-> Bring **(1) your embeddings** (from any model), **(2) your raw texts**, and **(3) a concept
-> named in plain English** — even a single ambiguous word like `"gender"` or `"occupation"`. An LLM
-> turns the word into concrete questions, a scorer labels each one per text, and **LEACE** removes
-> the whole thing in closed form — leaving everything else intact.
+The textbook answer is: annotate the attribute on your whole corpus, then adversarially train it out.
+That's two problems. It costs an annotation campaign you'll never budget for, and it only works for
+attributes you *already* labeled. The long tail of "wait, is my search ranker leaking gender?"
+questions never gets answered, because answering each one is a project.
+
+So `jevu` takes a different route. You bring three things:
+
+> **(1) your embeddings** (from any model), **(2) your raw texts**, and **(3) a concept named in
+> plain English** — even a single ambiguous word like `"gender"` or `"occupation"`. An LLM turns the
+> word into concrete questions, a scorer labels each one per text, and **LEACE** removes the whole
+> thing in closed form — leaving everything else intact.
 
 ```python
 from jevu import ConceptScrubber
@@ -37,31 +47,30 @@ scrubber.audit(X, texts=texts)
 # {'concept_auc_before': 0.65, 'concept_auc_after': 0.32, 'n_concepts': 15}
 ```
 
-No annotation. No retraining of the embedding model. Just numpy and scikit-learn plus a scorer.
+No annotation. No retraining the embedding model. Just numpy, scikit-learn, and a scorer. That's the
+whole pitch — now let me show you how each piece works, because the *how* is where it gets fun.
 
 ---
 
+## Erasing a concept is four steps, and only one of them is hard
 
+You hand in one ambiguous word and get back an eraser. Under the hood that word flows through four
+steps: **expand → score → select → erase.** I'll use `"occupation"` the whole way through.
 
-## The method: a four-step pipeline
+One piece of intuition carries the entire design:
 
-You hand in one ambiguous word — `"gender"` or `"occupation"` — and get back an eraser. Under the
-hood that word flows through four steps: **expand → score → select → erase**. We'll use `"occupation"`
-throughout.
-
-A key piece of intuition sets up the whole thing:
-
-> **Erasing a `k`-dimensional concept needs ~`k` directions to project out.**
+> **Erasing a `k`-dimensional concept means projecting out ~`k` directions.**
 
 "Gender" is essentially binary — it lives on *one* direction, so one question can carry it. A 28-way
-occupation *identity* lives in a ~27-dimensional subspace — no single question can capture it. That's
-why an ambiguous word has to become *several* questions before we can erase it.
+occupation *identity* lives in a ~27-dimensional subspace — no single question could ever capture it.
+This is why a bare word has to become *several* questions before you can erase it. Everything that
+follows is in service of that one sentence.
 
-### Step 1 — Expand the word into questions (LLM)
+### Step 1 — Turn the word into questions (the LLM's job)
 
-A bare noun like `"occupation"` is not something you can score directly ("is this text occupation-y?"
-is meaningless). So an LLM first **expands** it into a set of concrete, discriminative yes/no
-questions that *together cover* the concept's facets:
+A bare noun like `"occupation"` isn't something you can score directly. "Is this text occupation-y?"
+is meaningless. So an LLM first **expands** it into concrete, discriminative yes/no questions that
+*together cover* the concept's facets:
 
 ```python
 scrubber = ConceptScrubber(concept="occupation", expand=True, n_questions=15)
@@ -73,46 +82,45 @@ scrubber.concept_questions_
 #  'Does the text describe a legal professional?', ...]   # 15 covering questions
 ```
 
-We deliberately **over-generate a pool of `n_questions=15`** here — more than we'll ultimately erase
-with. That redundancy is what Step 3 selects *from*: a larger pool means better coverage of the
-concept's facets, and the greedy selector then prunes it down to the few non-overlapping questions
-that matter. (If you'd rather let the LLM *size* the set itself — 1–2 for a binary attribute like
-gender, a covering set for an identity — pass `expand="auto"`; but for the select stage below you want
-an explicit pool, so we fix `n_questions=15`.)
+Notice I ask for **more questions than I'll actually erase with** — a pool of 15. That redundancy is
+the point: a bigger pool covers more facets, and Step 3 prunes it back down to the few that matter.
+(If you'd rather let the model size the set itself — 1–2 for something binary, a covering set for an
+identity — pass `expand="auto"`. But the select stage below wants an explicit pool, so here I fix
+`n_questions=15`.)
 
-### Step 2 — Score a sample with JEV (build the matrix `Z`)
+### Step 2 — Score a sample into a matrix `Z`
 
-Each question is now scorable. **JEV** is a calibrated per-question scorer: give it a text and a
-yes/no question and it returns a number in `[0, 1]` — no training set, no threshold tuning. We run it
-over a **sample of `n` rows × the `p` questions** to build a score matrix
+Now the questions are scorable. **JEV** is a calibrated per-question scorer: hand it a text and a
+yes/no question, get back a number in `[0, 1]`. No training set, no threshold tuning. Run it over a
+**sample of `n` rows × the `p` questions** and you get a score matrix:
 
 ```
 Z ∈ ℝ^{n × p},   Z[i, j] = JEV(text_i, question_j) ∈ [0, 1]
 ```
 
-This `Z` is a little interpretable embedding: every column is a *named* axis. We sample (e.g. 250
-rows) rather than scoring everything, because the next step only needs enough rows to *rank* the
-questions — not the full dataset.
+Here's the way I think about `Z`: it's a tiny, *interpretable* embedding. Every column is a named
+axis. And I only score a sample — 250 rows, say — because the next step just needs enough data to
+*rank* questions, not the whole corpus.
 
-### Step 3 — Select the `k` questions that matter (greedy, label-free)
+### Step 3 — Keep only the questions that matter (greedy, label-free)
 
-A pool of 15 questions is good for coverage, but many overlap ("healthcare professional" and "works
-in medicine" carry nearly the same column). We keep the `k` that best **reconstruct the whole pool**
-— a classic *column subset selection*, done **label-free**: we look only at `Z`, never at the true
-occupation labels.
+Fifteen questions is good for coverage, but many of them overlap — "healthcare professional" and
+"works in medicine" are nearly the same column. So I keep the `k` that best **reconstruct the whole
+pool.** This is classic *column subset selection*, and I do it **label-free**: the selector looks
+only at `Z`, never at the true occupation labels.
 
-Concretely, center `Z` and greedily, one at a time, add the question whose column most reduces the
+Concretely: center `Z`, then greedily add, one at a time, the question whose column most reduces the
 least-squares reconstruction residual of the *entire* pool from the columns chosen so far. With `A`
-the matrix of already-selected columns plus a candidate `c`:
+the already-selected columns plus a candidate `c`:
 
 ```
 pick c that minimizes   ‖Z − A A⁺ Z‖_F
 ```
 
-where `A⁺` is the Moore–Penrose pseudoinverse, so `A A⁺ Z` is the orthogonal projection of every
-column of `Z` onto the span of the selected columns, and `‖·‖_F` is the Frobenius norm (total
-residual over all questions). Intuitively: *"which few questions let me linearly predict all the
-others?"*
+`A⁺` is the Moore–Penrose pseudoinverse, so `A A⁺ Z` is the orthogonal projection of every column of
+`Z` onto the span of the selected columns, and `‖·‖_F` is the Frobenius norm — the total residual
+across all questions. In plain words the objective asks: *which few questions let me linearly predict
+all the others?*
 
 <details>
 <summary><b>Why <code>A A⁺</code> is a projection (the SVD view)</b></summary>
@@ -148,7 +156,7 @@ In code we only have `A`, not its orthonormal basis `U`, so `np.linalg.pinv` run
 
 </details>
 
-Three questions usually suffice:
+In practice three questions usually suffice:
 
 ```python
 scrubber = ConceptScrubber(concept="occupation", expand=True, n_questions=15,
@@ -160,40 +168,42 @@ scrubber.selected_questions_
 #  'Does the text indicate an artist or performer?']
 ```
 
-Then only those `k` winners are scored on the *full* dataset — cost drops from `pool × N` to
-`pool × sample + k × N` — and the result is a small, **reusable** eraser you can apply to new data.
-*Which* data those `k` questions end up cleaning is a story in itself — see the next section.
+Then only those `k` winners get scored on the *full* dataset — cost drops from `pool × N` to
+`pool × sample + k × N` — and what you're left with is a small, **reusable** eraser you can apply to
+new data forever. *Which* data those three questions end up cleaning is a story in itself, and it's my
+favorite part of this whole thing. More on that below.
 
-### Step 4 — Erase with LEACE (the linear algebra)
+### Step 4 — Erase it with LEACE
 
-Now we have embeddings `X ∈ ℝ^{N × d}` and the selected concept scores `Z ∈ ℝ^{N × k}`. **LEACE**
-(*LEAst-squares Concept Erasure*, Belrose et al. NeurIPS 2023) finds the affine map `r(x)` that makes
+Now I have embeddings `X ∈ ℝ^{N × d}` and the selected concept scores `Z ∈ ℝ^{N × k}`. **LEACE**
+(*LEAst-squares Concept Erasure*, Belrose et al., NeurIPS 2023) finds the affine map `r(x)` that makes
 the concept **linearly unreadable** — `cov(r(X), Z) = 0` *exactly* — while changing `x` as little as
-possible (minimum expected squared distance). Here's why it looks the way it does.
+possible. Here's why it looks the way it does.
 
-**Warm-up: one direction.** Suppose the concept were a single unit direction `û` in `x`. Projecting
-it out is
+Start with the easy case: one direction. Suppose the concept were a single unit direction `û`.
+Projecting it out is just
 
 ```
 P = I − û ûᵀ,     x' = P x = x − (ûᵀx) û
 ```
 
-This zeroes the concept coordinate: `ûᵀx' = ûᵀx − (ûᵀx)(ûᵀû) = 0` (since `ûᵀû = 1`). A probe that
-relied on `û` now reads a constant. The catch: projecting along the *raw* axis `û` is only
-minimal-damage if the embedding's coordinates are uncorrelated and equal-variance. Real embeddings
-are not — some directions carry far more variance than others — so LEACE first **whitens**.
+which zeroes the concept coordinate: `ûᵀx' = ûᵀx − (ûᵀx)(ûᵀû) = 0`, since `ûᵀû = 1`. A probe that
+relied on `û` now reads a constant. **But there's a catch**, and it's the whole reason LEACE isn't a
+one-liner: projecting along the *raw* axis is only minimal-damage if your coordinates are uncorrelated
+and equal-variance. Real embeddings are neither — some directions carry far more variance than others.
+So LEACE whitens first.
 
-**The full map, in three moves:**
+The full map is three moves:
 
-1. **Whiten.** Let `Σ = cov(X)` be the embedding covariance. The whitening transform `W = Σ^{-1/2}`
-   maps `X` to a space where `cov(WX) = I` — all directions equal-variance, so ordinary orthogonal
-   projection *is* the minimal-damage operation.
+1. **Whiten.** Let `Σ = cov(X)`. The transform `W = Σ^{-1/2}` sends `X` to a space where
+   `cov(WX) = I` — every direction equal-variance, so ordinary orthogonal projection finally *is* the
+   minimal-damage operation.
 
 2. **Project out the concept subspace.** In whitened space the concept lives in the column space of
-   `W Σ_{XZ}`, where `Σ_{XZ} = cov(X, Z)` is the cross-covariance (how each embedding direction
-   co-varies with each concept question). Take an orthonormal basis `U` of that column space and
-   build the orthogonal-complement projector `P = I − U Uᵀ`. For a `k`-dim concept this removes `k`
-   directions — the concrete form of "erasing a `k`-dim concept needs ~`k` directions."
+   `W Σ_{XZ}`, where `Σ_{XZ} = cov(X, Z)` is the cross-covariance — how each embedding direction
+   co-varies with each question. Take an orthonormal basis `U` of that column space and build
+   `P = I − U Uᵀ`. For a `k`-dim concept this removes `k` directions. (There's that intuition again,
+   now made literal.)
 
 3. **Un-whiten and re-center.** Map back with `W⁻¹ = Σ^{1/2}` and restore the mean `μ`:
 
@@ -201,34 +211,27 @@ are not — some directions carry far more variance than others — so LEACE fir
 r(x) = μ + Σ^{1/2} · P · Σ^{-1/2} · (x − μ),      P = I − U Uᵀ
 ```
 
-Because the projection kills exactly the whitened concept subspace, the result provably satisfies
-`cov(r(X), Z) = 0`: **no linear probe can recover the concept** from `r(X)`. And because it's an
-orthogonal projection *in the whitened metric*, it's the least-squares-optimal such map — the
-smallest distortion of `x` that achieves erasure. One closed-form shot, no iteration. (If you only
-have hard labels instead of JEV scores, pass those as `Z` — the math is identical.)
+Because the projection kills exactly the whitened concept subspace, you get `cov(r(X), Z) = 0` for
+free — **no linear probe can recover the concept.** And because it's an orthogonal projection *in the
+whitened metric*, it's the least-squares-optimal such map: the smallest distortion of `x` that
+achieves erasure. One closed-form shot, no iteration. (If you already have hard labels instead of JEV
+scores, pass those as `Z` — the math doesn't care.)
 
 ---
 
+## It works, and the numbers say how well
 
+I evaluated on **Bias in Bios** (professional bios, 28 occupations, binary gender) with
+`text-embedding-3-small`, on a held-out test set.
 
-## Does it work? The numbers
-
-On **Bias in Bios** (professional bios, 28 occupations, binary gender) with
-`text-embedding-3-small`, evaluated on a held-out test set.
-
-**Gender** (binary) — linear-probe **AUC**:
-
+**Gender** collapses to chance. Linear-probe **AUC**:
 
 | Concept | Before | After (jevu) | Chance |
 | ------- | ------ | ------------ | ------ |
 | Gender  | 0.996  | **0.515**    | ~0.50  |
 
-
-Gender collapses to chance.
-
-**Occupation** (28-way) — linear-classifier **accuracy**, swept over how many selected questions
-`k` we erase:
-
+**Occupation** is the more interesting one, because it's not binary. Here's 28-way linear-classifier
+**accuracy**, swept over how many selected questions `k` I erase:
 
 | Erase with…              | Accuracy  | Notes                              |
 | ------------------------ | --------- | ---------------------------------- |
@@ -239,37 +242,61 @@ Gender collapses to chance.
 | true labels              | 0.304     | ground-truth erasure (the ceiling) |
 | — majority-class floor — | 0.304     | you can't drop below this          |
 
+The *label ceiling* is what you'd get erasing with the **true** one-hot occupation labels. By this
+metric jevu's zero-shot labels (0.322) land right next to it, and the floor (0.304) is the
+majority-class baseline you physically can't beat. Two things are worth sitting with. **First**, just
+three questions do most of the work — 0.648 → 0.378. **Second**, going 3 → 6 → 15 only buys the long
+tail. So far, so good.
 
-The *label ceiling* is what you'd get erasing with the **true** one-hot occupation labels — jevu's
-zero-shot JEV labels (0.322) land right next to it, and the floor (0.304) is the majority-class
-baseline you can't beat.
+### A caveat I have to be honest about: accuracy flatters this
 
-Two things to notice. **(1)** Just **k = 3** questions do most of the work — 0.648 → 0.378, roughly
-two-thirds of the way to the floor — because those three themes clean the bulk of the data (more on
-this below). **(2)** Going 3 → 6 → 15 only buys the long tail (0.378 → 0.367 → 0.322), closing the
-last gap to the ground-truth erasure.
+Here's where I have to correct myself, because the accuracy table oversells it. Accuracy saturates at
+the majority-class floor — once the probe gives up and predicts *professor* for everyone, it reads
+~0.30 whether the occupation signal is **gone** or merely **no longer the top-1 guess**. Those are very
+different, and accuracy can't tell them apart.
 
-And it's **selective** — erasing gender leaves occupation readable, and vice versa.
+The honest metric is **one-vs-rest AUC**, which ignores class priors and asks only: is the signal still
+linearly recoverable? By that measure the picture changes:
+
+| Erase with…              | occupation AUC | reading                          |
+| ------------------------ | -------------- | -------------------------------- |
+| nothing (before)         | 0.978          | fully readable                   |
+| k = 15 theme questions   | **0.896**      | *still* largely readable         |
+| true labels              | **0.519**      | actually gone (≈ chance)         |
+
+Erasing with the **true labels drives AUC to chance (0.52)** — LEACE genuinely removes the concept, and
+the cross-covariance goes to ~`1e-17`. But the **15 theme questions leave AUC at ~0.90.** The concept is
+*not* gone; it's just no longer top-1.
+
+Why? The **"erase a `k`-dim concept → remove ~`k` directions"** rule, biting back. Occupation identity
+is ~27-dimensional. Fifteen theme questions can't span it, so they erase a *subspace* of the identity —
+enough to collapse the argmax (and tank accuracy), but the directions they miss stay readable. Gender,
+by contrast, is **1-dimensional**, which is exactly why one question drives *its* AUC to chance. The
+method is as complete as the concept is low-rank.
+
+So the fair summary is: **for a binary attribute, zero-shot theme erasure ≈ ground truth; for a
+high-cardinality identity, it kills top-1 but leaves a recoverable tail.** Accuracy says "done," AUC
+says "mostly, for the common classes." I trust AUC. The *which-classes* part is the next section.
+
+And one more property that matters more than it might seem: erasure is **selective.** Remove gender
+and occupation stays readable; remove occupation and gender stays readable. You're not nuking the
+embedding, you're excising one concept.
 
 ---
 
-
-
 ## The interesting part: *which* data gets cleaned
 
-We saw that greedy top-k selection keeps the three themes *researcher/scholar*, *healthcare*, and
-*artist/performer*. With just **k=3** questions, the natural question is: *what, exactly, did those
-three erase?* We
-scored each selected question per occupation and marked a profession "covered" (its signal is
-captured, so it gets erased) when a selected question's mean score ≥ 0.5.
+The three themes the greedy selector kept were *researcher/scholar*, *healthcare*, and
+*artist/performer*. So the obvious question is: with only three questions, *what exactly did they
+erase?* I scored each selected question per occupation and called a profession "covered" — its signal
+captured, so it gets erased — when a selected question's mean score cleared 0.5.
 
-The result is more subtle — and more useful — than "it covers the biggest classes":
+My first guess was "it covers the biggest classes." That guess was wrong, and the real answer is more
+useful.
 
-**Coverage is theme-driven, not frequency-driven.** The correlation between a profession's
-*coverage* and its *row count* is only **0.16**. The three questions follow semantic themes
-(research, healthcare, arts), and coverage follows the themes regardless of how common a profession
-is:
-
+**Coverage is theme-driven, not frequency-driven.** The correlation between a profession's *coverage*
+and its *row count* is only **0.16** — basically nothing. The three questions follow semantic themes,
+and coverage follows the themes no matter how common a profession is:
 
 | occupation     | count  | coverage | outcome                        |
 | -------------- | ------ | -------- | ------------------------------ |
@@ -282,73 +309,73 @@ is:
 | **rapper**     | **2**  | **0.97** | **covered** (performer)        |
 | paralegal      | 3      | 0.02     | survives                       |
 
+Look at the extremes. A **rapper with 2 rows** gets erased, because it fits "performer." A **common
+attorney with 43 rows** survives, because no legal question was ever selected. Frequency isn't driving
+this; *theme fit* is.
 
-A rare rapper (2 rows) is erased because it fits "performer"; a common attorney (43 rows) survives
-because no legal question was selected.
+**And yet — by data mass, it really does erase the head of the distribution.** The two statements
+aren't in tension. The greedy objective maximizes reconstruction of the pool's *variance*, variance is
+dominated by the high-frequency professions, and so those frequent professions are the ones that
+*drive their theme into the selection* in the first place. The numbers:
 
-**But by data *mass*, it does erase the head of the distribution.** Because the greedy objective
-maximizes reconstruction of the pool's **variance**, and variance is dominated by the high-frequency
-professions, those frequent professions *drive their theme into the selection* and get captured
-first:
+- **75% of training rows** belong to professions that `k=3` covers. Three questions clean three
+  quarters of the data.
+- **6 of the 8 most-represented** professions are covered (only attorney and journalist slip through).
+- The rare tail is weaker and hit-or-miss — **57%** covered.
 
-- **75% of training rows** belong to professions that k=3 covers — three questions clean three
-quarters of the data.
-- **6 of the 8 most-represented** professions are covered (only attorney and journalist slip
-through).
-- The rare tail is weaker and hit-or-miss (**57%** covered).
+So here's the honest version: **frequency makes a profession *likely* to be covered — because it
+drives a theme into the selection — but never *guaranteed*.** A frequent profession with no matching
+theme question still walks right through.
 
-So the honest statement is: **frequency makes a profession *likely* to be covered — because it drives
-a theme into the selection — but not *guaranteed*.** A frequent profession with no matching theme
-question still survives.
-
-This is exactly why `k=3` already slashes occupation accuracy (it cleans the bulk of the data), and
-why pushing toward the 27-dim label ceiling only buys you the long tail — attorney, journalist,
-paralegal, yoga, interior design — each a small slice needing its own theme question.
+This is also the mechanism behind the k-sweep. `k=3` already slashes accuracy because it cleans the
+bulk of the data, and pushing toward the label ceiling only buys the long tail — attorney, journalist,
+paralegal, yoga, interior design — each a small slice that needs its own theme question. The math and
+the data tell the same story.
 
 ---
-
-
 
 ## Making it cheap
 
-The cost is the scoring calls (network-bound). Beyond the select-on-a-sample trick from step 3:
+The cost here is the scoring calls, which are network-bound. Two things keep it manageable, beyond the
+select-on-a-sample trick from Step 3:
 
-- **Why fit the eraser on the full set, not the sample?** Selection (step 3) only needs enough rows to
-*rank* questions; but LEACE (step 4) estimates the covariance `Σ` in the full embedding dimension
-(1536), which *needs* rows to be well-conditioned. Scoring the `k` winners is cheap, so you get both —
-select on 250, fit on all.
-- **Threaded, cached, calibrated.** All `questions × texts` cells score concurrently through one
-pooled HTTP client; every score is cached per `(model, text, question)`, so re-runs and repeated
-texts are free.
+- **I fit the eraser on the full set, not the sample — on purpose.** Selection only needs enough rows
+  to *rank* questions, but LEACE estimates a covariance in the full 1536-dim embedding space, which
+  needs rows to be well-conditioned. Scoring the three winners on everything is cheap, so I select on
+  250 and fit on all. Best of both.
+- **Everything is threaded and cached.** All `questions × texts` cells score concurrently through one
+  pooled HTTP client, and every score is cached per `(model, text, question)` — so re-runs and
+  repeated texts are free.
 
 ---
 
+## What I'd take away from this
 
-
-## Takeaways
-
-1. **You can erase any concept you can name** — no labels, no retraining the embedding model. Bring
-  embeddings from any model plus one English sentence.
-2. **Match the number of directions to the concept's rank.** Binary attributes (gender) need ~1
-  question; many-valued identities (occupation) need a covering set (~k for a k-way concept).
-   Over-generate a pool (`expand=True, n_questions=15`) and let Step 3 prune it — or let the LLM size
-   it directly with `expand="auto"`.
-3. **Zero-shot JEV labels ≈ ground-truth labels for erasure.** Occupation erased to 0.322 vs. a
-  0.304 label ceiling; gender to chance.
-4. **Erasure is selective.** Removing one concept leaves the others readable — you trade a little
-  utility on the target attribute, not everything.
-5. **Label-free greedy selection cleans by *variance*, which means by *data mass*.** k=3 erases ~75%
-  of rows because the frequent professions drive their themes into the selection. But coverage is
-   mediated by theme, not raw count — a frequent class with no matching question (attorney) survives,
-   a rare class that fits a theme (rapper) gets erased. Correlation of coverage with frequency is
-   only 0.16; correlation with *theme fit* is what matters.
+1. **You can erase any concept you can name.** No labels, no retraining the embedding model — just
+   embeddings from any model plus one English sentence.
+2. **Match the number of directions to the concept's rank.** Binary attributes need ~1 question;
+   many-valued identities need a covering set (~`k` for a `k`-way concept). Over-generate a pool and
+   let Step 3 prune it, or let the LLM size it with `expand="auto"`.
+3. **How complete the erasure is depends on the concept's rank — and on your metric.** Gender
+   (1-dim) goes to chance; zero-shot labels there ≈ ground truth. Occupation (~27-dim) only gets a
+   *covering* set of ≤15 questions, so it collapses top-1 accuracy (0.648 → 0.322) but a probe still
+   recovers it by AUC (~0.90 vs 0.52 for true-label erasure). Measure with AUC, not accuracy — and add
+   questions until the AUC, not the accuracy, stops moving.
+4. **Erasure is selective.** You trade a little utility on the target attribute, not everything else.
+5. **Label-free selection cleans by variance, which means by data mass.** `k=3` erases ~75% of rows,
+   but coverage is mediated by *theme*, not raw count — a frequent class with no matching question
+   survives, a rare class that fits a theme gets erased. Correlation with frequency is only 0.16;
+   correlation with theme fit is what matters.
 6. **Interpretability is the real payoff.** Because every dimension is a readable question, you can
-  point at *exactly* which concepts (and thus which slices of your data) an eraser removes — and
-   which survive. Dense-vector debiasing can't tell you that.
+   point at *exactly* which concepts — and which slices of your data — an eraser touches, and which it
+   misses. Dense-vector debiasing can't tell you that, and I think that's the whole game.
+
+An embedding is a compression of meaning, and it compresses everything it saw — including the things
+you'd never have chosen to carry forward. Erasure is just deciding, out loud and on the record, which
+meaning you refuse to keep. The nice part is that with `jevu` you don't have to take that decision on
+faith — you can read, concept by concept, exactly what you let go.
 
 ---
-
-
 
 ## Try it
 
@@ -356,14 +383,13 @@ texts are free.
 pip install "jevu[jev,openai]"
 ```
 
-See the runnable notebooks in [`examples/`](../examples): `occupation_erasure.ipynb` (top-k sweep,
-before/after PCA, profession-coverage charts), `gender_erasure.ipynb`, and `search_debias.ipynb`
-(top-k retrieval before/after erasing gender from query + document embeddings).
+The runnable notebooks are in [`examples/`](../examples): `occupation_erasure.ipynb` (the top-k sweep,
+before/after PCA, and the profession-coverage charts), `gender_erasure.ipynb`, and `search_debias.ipynb`
+(top-k retrieval before and after erasing gender from query + document embeddings).
 
 ### References
 
 - Belrose, Schneider-Joseph, Ravfogel, Cotterell, Raff, Biderman. *LEACE: Perfect Linear Concept
-Erasure in Closed Form.* NeurIPS 2023.
+  Erasure in Closed Form.* NeurIPS 2023.
 - De-Arteaga et al. *Bias in Bios: A Case Study of Semantic Representation Bias in a High-Stakes
-Setting.* FAT\* 2019. (evaluation dataset)
-
+  Setting.* FAT\* 2019. (evaluation dataset)
