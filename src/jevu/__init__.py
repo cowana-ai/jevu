@@ -1,14 +1,15 @@
 """jevu -- erase a target concept from text embeddings.
 
-Define a concept in plain English, label it zero-shot with JEV (or bring your own labels),
-and remove its linear signal from off-the-shelf embeddings with INLP or LEACE.
+Define a concept in plain English, label it zero-shot with laya (a local, free, open-weights
+calibrated scorer -- or bring your own labels), and remove its linear signal from off-the-shelf
+embeddings with INLP or LEACE.
 """
 import logging as _logging
 
 from .audit import concept_auc, erasure_report, tpr_gap
 from .concepts import LLMConceptLabeler
 from .erasers import InlpEraser, LeaceEraser
-from .labelers import JevLabeler
+from .laya_labeler import LayaLabeler
 from .scrubber import ConceptScrubber
 
 # Library best practice: attach a NullHandler so importing jevu never emits logs unless the
@@ -20,7 +21,7 @@ __all__ = [
     "ConceptScrubber",
     "InlpEraser",
     "LeaceEraser",
-    "JevLabeler",
+    "LayaLabeler",
     "LLMConceptLabeler",
     "concept_auc",
     "erasure_report",

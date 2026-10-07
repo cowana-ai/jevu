@@ -1,9 +1,9 @@
 """LLM-expanded concept labeling.
 
 Give a high-level attribute to erase (e.g. ``"gender"``); an LLM turns it into several concrete
-yes/no questions covering its facets (woman / man / gendered pronouns / ...), and JEV scores each
-one per text. The result is an ``(n_texts, n_questions)`` matrix -- a multi-dimensional concept
-that the erasers remove as a whole.
+yes/no questions covering its facets (woman / man / gendered pronouns / ...), and laya scores each
+one per text locally. The result is an ``(n_texts, n_questions)`` matrix -- a multi-dimensional
+concept that the erasers remove as a whole.
 """
 from __future__ import annotations
 
@@ -11,14 +11,12 @@ import hashlib
 import json
 import logging
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Optional, Sequence
 
 import numpy as np
 
-from ._util import progress
-from .labelers import JevLabeler
+from .laya_labeler import LayaLabeler
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +92,7 @@ def _digest(obj) -> str:
 
 
 class LLMConceptLabeler:
-    """Expand a concept with an LLM, then label each sub-question with JEV.
+    """Expand a concept with an LLM, then label each sub-question locally with laya.
 
     The concept may be terse or ambiguous (``"genders"``, ``"age"``, ``"tone"``) -- the LLM
     interprets it and writes concrete, discriminative detection questions, so you don't have to
@@ -106,18 +104,19 @@ class LLMConceptLabeler:
     n_questions : how many yes/no questions to generate.
     questions : provide questions directly to skip the LLM call entirely.
     llm_model : chat model used to expand the concept.
-    jev_model : JEV model used to score each question.
-    openai_api_key / openrouter_api_key : keys for the LLM / JEV (else read from env).
-    cache_dir : shared cache for the expansion and the JEV scores.
-    llm_client / jev_client : optional injected clients (for tests / custom endpoints).
+    laya_model : laya checkpoint used to score each question locally.
+    openai_api_key : key for the expansion LLM (else read from ``$OPENAI_API_KEY``).
+    device : torch device for laya (``None`` = auto, e.g. ``mps``/``cuda``/``cpu``).
+    cache_dir : shared cache for the expansion and the laya scores.
+    llm_client / laya_agent : optional injected clients (for tests / reuse).
     """
 
     def __init__(self, concept: str, *, n_questions=6, max_questions: int = 24,
                  questions: Optional[Sequence[str]] = None,
-                 llm_model: str = "gpt-4o-mini", jev_model: str = "typesafe/jev-1.13",
-                 openai_api_key: Optional[str] = None, openrouter_api_key: Optional[str] = None,
-                 cache_dir: Optional[str] = None, llm_client=None, jev_client=None,
-                 max_workers: int = 8, progress: bool = True, temperature: float = 0.0):
+                 llm_model: str = "gpt-4o-mini", laya_model: str = "convaiinnovations/laya",
+                 openai_api_key: Optional[str] = None, device: Optional[str] = None,
+                 cache_dir: Optional[str] = None, llm_client=None, laya_agent=None,
+                 batch_size: int = 16, progress: bool = True, temperature: float = 0.0):
         if not concept or not concept.strip():
             raise ValueError("concept must be a non-empty string")
         if n_questions != "auto" and not (isinstance(n_questions, int) and n_questions >= 1):
@@ -128,16 +127,17 @@ class LLMConceptLabeler:
         self.max_questions = max_questions      # cap when n_questions == 'auto'
         self._questions = [q.strip() for q in questions] if questions else None
         self.llm_model = llm_model
-        self.jev_model = jev_model
+        self.laya_model = laya_model
         self.openai_api_key = openai_api_key or os.environ.get("OPENAI_API_KEY")
-        self.openrouter_api_key = openrouter_api_key or os.environ.get("OPENROUTER_API_KEY")
+        self.device = device
         self.cache_dir = Path(cache_dir) if cache_dir else None
         if self.cache_dir:
             self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.llm_client = llm_client
-        self.jev_client = jev_client
-        self.max_workers = max_workers
+        self.laya_agent = laya_agent
+        self.batch_size = batch_size
         self.progress = progress
+        self._scorer = None
 
     def _generate(self, texts: Optional[Sequence[str]]) -> list:
         auto = self.n_questions == "auto"
@@ -183,39 +183,28 @@ class LLMConceptLabeler:
                         self.concept, len(self._questions), self._questions)
         return self._questions
 
+    def _scorer_(self) -> LayaLabeler:
+        """A shared laya scorer (one loaded model reused across calls)."""
+        if self._scorer is None:
+            self._scorer = LayaLabeler(
+                questions=self._questions or [self.concept], model=self.laya_model,
+                device=self.device, batch_size=self.batch_size,
+                cache_dir=str(self.cache_dir) if self.cache_dir else None,
+                agent=self.laya_agent, progress=self.progress)
+            self.laya_agent = self._scorer._agent  # reuse loaded model
+        return self._scorer
+
     def score(self, texts: Sequence[str]) -> np.ndarray:
-        """Return an ``(n_texts, n_questions)`` matrix of JEV scores for the concept's questions."""
+        """Return an ``(n_texts, n_questions)`` matrix of laya scores for the concept's questions."""
         return self.score_questions(self.questions(texts), texts)
 
     def score_questions(self, questions: Sequence[str], texts: Sequence[str]) -> np.ndarray:
-        """Score an explicit list of questions over texts -> ``(n_texts, len(questions))``.
+        """Score an explicit list of questions over texts -> ``(n_texts, len(questions))`` with laya.
 
-        All ``questions x texts`` cells are scored in one shared thread pool (one pooled HTTP client),
-        so the whole job runs at ``max_workers`` concurrency rather than one question at a time.
+        laya answers all questions for a text in one local forward pass; scores are cached per
+        ``(model, question, text)`` so re-runs and repeated texts are free.
         """
-        texts = list(texts)
-        qs = list(questions)
-        labs = [JevLabeler(q, model=self.jev_model, api_key=self.openrouter_api_key,
-                           cache_dir=str(self.cache_dir) if self.cache_dir else None,
-                           max_workers=self.max_workers) for q in qs]
-        tasks = [(ti, ci, labs[ci], t) for ci in range(len(qs)) for ti, t in enumerate(texts)]
-        n_missing = sum(1 for _, _, lab, t in tasks
-                        if not (lab.cache_dir and lab._cache_path(lab._payload(t)).exists()))
-        logger.info("scoring %d texts x %d questions = %d cells (%d cached, %d to fetch)",
-                    len(texts), len(qs), len(tasks), len(tasks) - n_missing, n_missing)
-        client = (self.jev_client or labs[0]._make_client()) if n_missing else None
-        close = n_missing and self.jev_client is None
-        M = np.empty((len(texts), len(qs)), dtype=float)
-        try:
-            with ThreadPoolExecutor(max_workers=self.max_workers) as pool:
-                futs = {pool.submit(lab._score_one, t, client): (ti, ci)
-                        for ti, ci, lab, t in tasks}
-                desc = f"JEV x{len(qs)}: {self.concept[:30]}"
-                for fut in progress(as_completed(futs), total=len(tasks), desc=desc,
-                                    enabled=self.progress and len(tasks) > 1):
-                    ti, ci = futs[fut]
-                    M[ti, ci] = fut.result()
-            return M
-        finally:
-            if close and client is not None and hasattr(client, "close"):
-                client.close()
+        scorer = self._scorer_()
+        M = scorer.score_questions(list(questions), list(texts))
+        self.laya_agent = scorer._agent  # keep the loaded model for subsequent calls
+        return M

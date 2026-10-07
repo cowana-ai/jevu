@@ -230,53 +230,50 @@ I evaluated on **Bias in Bios** (professional bios, 28 occupations, binary gende
 | ------- | ------ | ------------ | ------ |
 | Gender  | 0.996  | **0.515**    | ~0.50  |
 
-**Occupation** is the more interesting one, because it's not binary. Here's 28-way linear-classifier
-**accuracy**, swept over how many selected questions `k` I erase:
+**Occupation** is the interesting one, because it isn't binary. This is the canonical pipeline —
+expand `occupation` into **15 diverse, fine-grained questions**, greedily **select k=3**, erase —
+reported on **both** metrics, because they disagree and the disagreement is the whole point:
 
-| Erase with…              | Accuracy  | Notes                              |
-| ------------------------ | --------- | ---------------------------------- |
-| nothing (before)         | 0.648     | the embedding leaks occupation     |
-| **k = 3** questions      | **0.378** | cleans most of the data mass       |
-| **k = 6** questions      | **0.367** |                                    |
-| **k = 15** questions     | **0.322** | full covering set                  |
-| true labels              | 0.304     | ground-truth erasure (the ceiling) |
-| — majority-class floor — | 0.304     | you can't drop below this          |
+| metric | before | erased (k=3) | true-label ceiling |
+| --- | --- | --- | --- |
+| top-1 accuracy | 0.648 | **0.404** | 0.304 |
+| one-vs-rest AUC | 0.978 | **0.947** | 0.519 |
 
-The *label ceiling* is what you'd get erasing with the **true** one-hot occupation labels. By this
-metric jevu's zero-shot labels (0.322) land right next to it, and the floor (0.304) is the
-majority-class baseline you physically can't beat. Two things are worth sitting with. **First**, just
-three questions do most of the work — 0.648 → 0.378. **Second**, going 3 → 6 → 15 only buys the long
-tail. So far, so good.
+Look at the two rows. Accuracy **craters** (0.648 → 0.404, heading for the 0.304 majority floor) — but
+AUC **barely moves** (0.978 → 0.947). The k=3 pipeline collapses the *top-1 guess* while leaving the
+occupation signal almost fully recoverable. If I'd only reported accuracy, I'd have told you occupation
+was erased. It isn't.
 
-### A caveat I have to be honest about: accuracy flatters this
+### Why accuracy flatters this — and the honest metric
 
-Here's where I have to correct myself, because the accuracy table oversells it. Accuracy saturates at
-the majority-class floor — once the probe gives up and predicts *professor* for everyone, it reads
-~0.30 whether the occupation signal is **gone** or merely **no longer the top-1 guess**. Those are very
-different, and accuracy can't tell them apart.
+Accuracy saturates at the majority floor: once the probe gives up and predicts *professor* for everyone
+(it does, for **89%** of examples at k=3), it reads ~0.40 whether the signal is **gone** or merely **no
+longer top-1**. One-vs-rest AUC ignores priors and asks the real question — is the signal still
+linearly recoverable? — and at k=3 the answer is *yes*. Keep the whole pool (**k=15**) and AUC finally
+moves, but *unevenly*:
 
-The honest metric is **one-vs-rest AUC**, which ignores class priors and asks only: is the signal still
-linearly recoverable? By that measure the picture changes:
+| erase | occupation AUC | dominant / head | minority / tail |
+| --- | --- | --- | --- |
+| before | 0.978 | 0.972 | 0.981 |
+| k = 3 | 0.947 | 0.902 | 0.973 |
+| k = 15 | 0.797 | **0.582** | 0.912 |
+| true labels | 0.519 | 0.470 | 0.547 |
 
-| Erase with…              | occupation AUC | reading                          |
-| ------------------------ | -------------- | -------------------------------- |
-| nothing (before)         | 0.978          | fully readable                   |
-| k = 15 theme questions   | **0.896**      | *still* largely readable         |
-| true labels              | **0.519**      | actually gone (≈ chance)         |
+The **head gets erased** (dominant AUC 0.97 → 0.58, nearing the 0.47 ceiling) once you keep enough
+fine-grained questions — "nurse / physician / professor" separate what the "healthcare" umbrella used
+to merge. The **tail survives** (minority 0.91), because 15 questions get spent naming *common* jobs,
+not rare ones. Feed LEACE the **true labels** — a target that spans the full ~27-dim identity — and AUC
+collapses to chance (0.52), cross-covariance ~`1e-17`.
 
-Erasing with the **true labels drives AUC to chance (0.52)** — LEACE genuinely removes the concept, and
-the cross-covariance goes to ~`1e-17`. But the **15 theme questions leave AUC at ~0.90.** The concept is
-*not* gone; it's just no longer top-1.
+That's the **"erase a `k`-dim concept → remove ~`k` directions"** rule, made concrete. Gender is 1-dim,
+so one question hits chance. Occupation is ~27-dim, so 15 questions only partly span it, and k=3 — three
+head-representative picks — barely dents the AUC at all. The method is as complete as your question set
+is high-rank.
 
-Why? The **"erase a `k`-dim concept → remove ~`k` directions"** rule, biting back. Occupation identity
-is ~27-dimensional. Fifteen theme questions can't span it, so they erase a *subspace* of the identity —
-enough to collapse the argmax (and tank accuracy), but the directions they miss stay readable. Gender,
-by contrast, is **1-dimensional**, which is exactly why one question drives *its* AUC to chance. The
-method is as complete as the concept is low-rank.
-
-So the fair summary is: **for a binary attribute, zero-shot theme erasure ≈ ground truth; for a
-high-cardinality identity, it kills top-1 but leaves a recoverable tail.** Accuracy says "done," AUC
-says "mostly, for the common classes." I trust AUC. The *which-classes* part is the next section.
+So the fair summary: **for a binary attribute, zero-shot erasure ≈ ground truth; for a high-cardinality
+identity, k=3 kills top-1 but leaves the signal, and you approach full erasure only as the question set
+approaches the concept's rank.** Accuracy says "done"; AUC says "mostly, for the common classes." I
+trust AUC. The *which-classes* part is the next section.
 
 And one more property that matters more than it might seem: erasure is **selective.** Remove gender
 and occupation stays readable; remove occupation and gender stays readable. You're not nuking the

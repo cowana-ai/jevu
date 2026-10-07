@@ -1,7 +1,6 @@
 import json
 import types
 
-import httpx
 import numpy as np
 
 from jevu import ConceptScrubber, LLMConceptLabeler, concept_auc
@@ -16,24 +15,24 @@ def fake_llm(questions):
     return types.SimpleNamespace(chat=types.SimpleNamespace(completions=types.SimpleNamespace(create=create)))
 
 
-def jev_mock(score_for):
-    def handler(request: httpx.Request) -> httpx.Response:
-        doc = json.loads(request.content)["state"]["document"]
-        q = json.loads(request.content)["questions"]["q1"]["instructions"]
-        return httpx.Response(200, json={"answers": {"q1": {"noul": score_for(doc, q)}}})
-    return httpx.Client(transport=httpx.MockTransport(handler))
+def fake_laya(score_for):
+    """A stand-in laya agent: answers every noul question for each state in one batch."""
+    def predict_batch(states, questions, batch_size=None, **kw):
+        return [{"answers": {qid: {"noul": score_for(s, q["instructions"])}
+                             for qid, q in questions.items()}} for s in states]
+    return types.SimpleNamespace(predict_batch=predict_batch)
 
 
 def test_expands_concept_and_scores_matrix(tmp_path):
     qs = ["Does the text refer to a woman?", "Does the text refer to a man?"]
-    # JEV returns high score when the question's subject word appears in the text
+    # laya returns high score when the question's subject word appears in the text
     def score_for(doc, q):
         if "woman" in q and "woman" in doc: return 0.9
         if "man" in q and "woman" not in doc and "man" in doc: return 0.9
         return 0.1
     lab = LLMConceptLabeler("gender", n_questions=2, questions=None,
-                            llm_client=fake_llm(qs), jev_client=jev_mock(score_for),
-                            openai_api_key="k", openrouter_api_key="k", cache_dir=str(tmp_path))
+                            llm_client=fake_llm(qs), laya_agent=fake_laya(score_for),
+                            openai_api_key="k", cache_dir=str(tmp_path))
     assert lab.questions() == qs
     M = lab.score(["a woman led", "a man led"])
     assert M.shape == (2, 2)
@@ -50,22 +49,16 @@ def test_expansion_prompt_handles_terse_and_discriminative():
 
 
 def test_terse_concept_expands_via_llm(tmp_path):
-    import json, types, httpx
     qs = ["Does the text refer to a woman or female person?",
           "Does the text refer to a man or male person?"]
-    llm = types.SimpleNamespace(chat=types.SimpleNamespace(completions=types.SimpleNamespace(
-        create=lambda **kw: types.SimpleNamespace(choices=[types.SimpleNamespace(
-            message=types.SimpleNamespace(content=json.dumps({"questions": qs}))) ]))))
-    jev = httpx.Client(transport=httpx.MockTransport(
-        lambda r: httpx.Response(200, json={"answers": {"q1": {"noul": 0.5}}})))
-    lab = LLMConceptLabeler("genders", n_questions=2, llm_client=llm, jev_client=jev,
-                            openai_api_key="k", openrouter_api_key="k", cache_dir=str(tmp_path))
+    lab = LLMConceptLabeler("genders", n_questions=2, llm_client=fake_llm(qs),
+                            laya_agent=fake_laya(lambda d, q: 0.5),
+                            openai_api_key="k", cache_dir=str(tmp_path))
     assert lab.questions() == qs                      # terse "genders" -> concrete questions
     assert lab.score(["a woman led"]).shape == (1, 2)
 
 
 def test_auto_expand_lets_llm_choose_count(tmp_path):
-    import types, httpx
     # LLM returns a variable-length list + a cardinality field (auto mode)
     body = json.dumps({"cardinality": "identity",
                        "questions": ["Does the text refer to a nurse?", "Does the text refer to a teacher?",
@@ -73,10 +66,9 @@ def test_auto_expand_lets_llm_choose_count(tmp_path):
     llm = types.SimpleNamespace(chat=types.SimpleNamespace(completions=types.SimpleNamespace(
         create=lambda **kw: types.SimpleNamespace(choices=[types.SimpleNamespace(
             message=types.SimpleNamespace(content=body))]))))
-    jev = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200, json={"answers": {"q1": {"noul": 0.3}}})))
     lab = LLMConceptLabeler("occupation", n_questions="auto", max_questions=24,
-                            llm_client=llm, jev_client=jev, openai_api_key="k",
-                            openrouter_api_key="k", cache_dir=str(tmp_path))
+                            llm_client=llm, laya_agent=fake_laya(lambda d, q: 0.3),
+                            openai_api_key="k", cache_dir=str(tmp_path))
     qs = lab.questions()
     assert len(qs) == 3                      # LLM chose the count, not a fixed n
     assert lab.score(["a nurse"]).shape == (1, 3)
@@ -118,8 +110,6 @@ def test_select_k_with_sampling():
             self.calls["full_rows"] = max(self.calls["full_rows"], len(texts))
             cols = {"q_a": a, "q_a_copy": a, "q_b": b,
                     "q_noise": (rng.standard_normal(n) > 0).astype(int)}
-            # emulate scoring only the requested rows/questions
-            idx = range(len(texts))  # texts are the first len(texts) here for the test
             return np.column_stack([cols[q][:len(texts)] for q in questions]).astype(float)
         def score(self, texts): return self.score_questions(self._qs, texts)
 

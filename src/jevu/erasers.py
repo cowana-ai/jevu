@@ -33,7 +33,7 @@ def _as_2d(X) -> np.ndarray:
 
 def _binarize(y) -> np.ndarray:
     """Turn concept scores into 0/1 labels. Continuous scores are thresholded at 0.5
-    (JEV `noul` scores are calibrated probabilities, so 0.5 is the natural boundary)."""
+    (laya `noul` scores are calibrated probabilities, so 0.5 is the natural boundary)."""
     y = np.asarray(y)
     if y.dtype.kind == "f" and (y.min() < 0 or y.max() > 1 or np.unique(y).size > 2):
         return (y >= 0.5).astype(int)

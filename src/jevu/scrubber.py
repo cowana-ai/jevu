@@ -1,15 +1,15 @@
 """High-level API: give a concept and your embeddings, erase the concept.
 
 Bring embeddings from **any** model — this package never embeds for you. Give it the embeddings plus
-either the raw texts (so JEV can label the concept) or your own labels::
+either the raw texts (so laya can label the concept) or your own labels::
 
     from jevu import ConceptScrubber
 
     scrubber = ConceptScrubber(concept="Does the text describe a woman?")
-    scrubber.fit(X, texts=texts)         # your embeddings; JEV labels the concept
+    scrubber.fit(X, texts=texts)         # your embeddings; laya labels the concept locally
     X_clean = scrubber.transform(X_new)  # erase the concept from new embeddings
 
-    scrubber.fit(X, labels=y)            # your embeddings and labels (no JEV at all)
+    scrubber.fit(X, labels=y)            # your embeddings and labels (no scorer at all)
 """
 from __future__ import annotations
 
@@ -21,7 +21,7 @@ import numpy as np
 from .audit import concept_auc
 from .concepts import LLMConceptLabeler
 from .erasers import InlpEraser, LeaceEraser
-from .labelers import JevLabeler
+from .laya_labeler import LayaLabeler
 
 logger = logging.getLogger(__name__)
 
@@ -72,9 +72,10 @@ class ConceptScrubber:
         scored only on the sample, then just the ``select_k`` winners are scored on the full data.
         Cuts selection cost from ``pool x n`` to ``pool x select_sample + select_k x n``.
     labeler : object with ``.score(texts) -> (n,) or (n, k)``; overrides ``concept``/``expand``.
-    jev_model, llm_model : model ids for JEV scoring / concept expansion.
-    cache_dir : shared on-disk cache for JEV scores and concept expansions.
-    openrouter_api_key, openai_api_key : keys for JEV / the expansion LLM (else read from env).
+    laya_model, llm_model : model ids for laya scoring / concept expansion.
+    device : torch device for laya (``None`` = auto, e.g. ``mps``/``cuda``/``cpu``).
+    cache_dir : shared on-disk cache for laya scores and concept expansions.
+    openai_api_key : key for the expansion LLM (only needed when ``expand`` is truthy).
     eraser_kwargs : forwarded to the chosen eraser.
     """
 
@@ -82,9 +83,8 @@ class ConceptScrubber:
                  expand=False, n_questions: int = 6, max_questions: int = 24,
                  select_k: Optional[int] = None, select_sample: Optional[int] = None,
                  random_state: int = 0, labeler=None,
-                 jev_model: str = "typesafe/jev-1.13", llm_model: str = "gpt-4o-mini",
-                 cache_dir: Optional[str] = None, max_workers: int = 8,
-                 openrouter_api_key: Optional[str] = None,
+                 laya_model: str = "convaiinnovations/laya", llm_model: str = "gpt-4o-mini",
+                 device: Optional[str] = None, cache_dir: Optional[str] = None, batch_size: int = 16,
                  openai_api_key: Optional[str] = None,
                  **eraser_kwargs):
         if method not in _ERASERS:
@@ -98,11 +98,11 @@ class ConceptScrubber:
         self.select_sample = select_sample
         self.random_state = random_state
         self._labeler = labeler
-        self.jev_model = jev_model
+        self.laya_model = laya_model
         self.llm_model = llm_model
+        self.device = device
         self.cache_dir = cache_dir
-        self.max_workers = max_workers
-        self._openrouter_api_key = openrouter_api_key
+        self.batch_size = batch_size
         self._openai_api_key = openai_api_key
         self.eraser = _ERASERS[method](**eraser_kwargs)
 
@@ -115,13 +115,12 @@ class ConceptScrubber:
                 nq = "auto" if self.expand == "auto" else self.n_questions
                 self._labeler = LLMConceptLabeler(
                     self.concept, n_questions=nq, max_questions=self.max_questions,
-                    llm_model=self.llm_model, jev_model=self.jev_model, openai_api_key=self._openai_api_key,
-                    openrouter_api_key=self._openrouter_api_key, cache_dir=self.cache_dir,
-                    max_workers=self.max_workers)
+                    llm_model=self.llm_model, laya_model=self.laya_model,
+                    openai_api_key=self._openai_api_key, device=self.device,
+                    cache_dir=self.cache_dir, batch_size=self.batch_size)
             else:
-                self._labeler = JevLabeler(self.concept, model=self.jev_model,
-                                           api_key=self._openrouter_api_key, cache_dir=self.cache_dir,
-                                           max_workers=self.max_workers)
+                self._labeler = LayaLabeler(self.concept, model=self.laya_model, device=self.device,
+                                            cache_dir=self.cache_dir, batch_size=self.batch_size)
         return self._labeler
 
     def _score_pool(self, texts):

@@ -14,7 +14,7 @@ def make_data(n=800, d=24, seed=0):
 
 
 class FakeLabeler:
-    """Stand-in for JevLabeler: scores by keyword, no network."""
+    """Stand-in labeler: scores by keyword, no model."""
     def score(self, texts):
         return np.array([1.0 if "woman" in t.lower() else 0.0 for t in texts])
 

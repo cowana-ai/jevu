@@ -5,12 +5,12 @@ build-backend = "hatchling.build"
 [project]
 name = "jevu"
 version = "0.1.0"
-description = "Erase a target concept from text embeddings, labeled zero-shot with JEV."
+description = "Erase a target concept from text embeddings, labeled zero-shot with laya."
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }
 authors = [{ name = "Chingis Oinar" }]
-keywords = ["embeddings", "debiasing", "fairness", "concept-erasure", "inlp", "leace", "jev"]
+keywords = ["embeddings", "debiasing", "fairness", "concept-erasure", "inlp", "leace", "laya"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
@@ -24,13 +24,13 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-jev = ["httpx>=0.24", "tqdm>=4.60"]         # zero-shot concept labeling via JEV (+ progress bars)
+laya = ["laya>=0.4", "tqdm>=4.60"]          # local, free zero-shot concept labeling via laya (+ progress)
 openai = ["openai>=1.0"]                     # LLM concept expansion (expand=True)
 examples = [                                 # run the example notebooks (incl. BYO embeddings)
-    "httpx>=0.24", "tqdm>=4.60", "openai>=1.0", "pandas>=1.3", "matplotlib>=3.5", "jupyter",
+    "laya>=0.4", "tqdm>=4.60", "openai>=1.0", "pandas>=1.3", "matplotlib>=3.5", "jupyter",
 ]
 dev = [                                      # everything for development (tests + notebooks)
-    "pytest>=7", "httpx>=0.24", "tqdm>=4.60", "openai>=1.0", "pandas>=1.3", "matplotlib>=3.5", "jupyter",
+    "pytest>=7", "laya>=0.4", "tqdm>=4.60", "openai>=1.0", "pandas>=1.3", "matplotlib>=3.5", "jupyter",
 ]
 
 [project.urls]
