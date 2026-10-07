@@ -51,6 +51,17 @@ EXPANSION_SYSTEM = (
     "questions, not just the frequent ones; a value with no question of its own cannot be removed.\n"
     "  (c) RECONSTRUCTIVE -- from the full set of answers one should be able to tell exactly WHICH value "
     "applies. Prefer specific over broad; granularity and independence matter more than tidy grouping.\n"
+    "CONCRETE EXAMPLE for the attribute 'occupation'.\n"
+    "  BAD (too broad -- a few umbrellas that collapse dozens of jobs onto a few directions; do NOT do "
+    "this): 'Does the text describe a healthcare professional?'; 'Does the text describe an educator or "
+    "academic?'; 'Does the text describe an artist or performer?'\n"
+    "  GOOD (specific, one job each, spanning the range): 'Does the text describe a nurse?'; 'Does the "
+    "text describe a physician?'; 'Does the text describe a surgeon?'; 'Does the text describe a "
+    "dentist?'; 'Does the text describe a professor?'; 'Does the text describe a teacher?'; 'Does the "
+    "text describe a software engineer?'; 'Does the text describe an attorney?'; 'Does the text describe "
+    "a journalist?'; 'Does the text describe a photographer?'; 'Does the text describe an accountant?'; "
+    "'Does the text describe a psychologist?'; ...\n"
+    "Mirror the GOOD style: name a SPECIFIC value in each question.\n"
     "Every question: a yes/no question starting like 'Does the text ...?'; answerable from the text "
     "alone; role-neutral (query or document); no two near-duplicates. Avoid questions that are yes -- "
     "or no -- for essentially EVERY text (they carry no information); a specific value question that is "
@@ -106,12 +117,13 @@ class LLMConceptLabeler:
                  llm_model: str = "gpt-4o-mini", jev_model: str = "typesafe/jev-1.13",
                  openai_api_key: Optional[str] = None, openrouter_api_key: Optional[str] = None,
                  cache_dir: Optional[str] = None, llm_client=None, jev_client=None,
-                 max_workers: int = 8, progress: bool = True):
+                 max_workers: int = 8, progress: bool = True, temperature: float = 0.0):
         if not concept or not concept.strip():
             raise ValueError("concept must be a non-empty string")
         if n_questions != "auto" and not (isinstance(n_questions, int) and n_questions >= 1):
             raise ValueError("n_questions must be a positive int or 'auto'")
         self.concept = concept.strip()
+        self.temperature = temperature          # 0 = deterministic & reproducible expansion
         self.n_questions = n_questions          # int (fixed count) or 'auto' (LLM decides)
         self.max_questions = max_questions      # cap when n_questions == 'auto'
         self._questions = [q.strip() for q in questions] if questions else None
@@ -137,7 +149,8 @@ class LLMConceptLabeler:
             {"role": "system", "content": system},
             {"role": "user", "content": "Generate the questions.\n" + json.dumps(evidence, ensure_ascii=False)},
         ]
-        request = {"model": self.llm_model, "messages": messages, "response_format": {"type": "json_object"}}
+        request = {"model": self.llm_model, "messages": messages, "temperature": self.temperature,
+                   "response_format": {"type": "json_object"}}
         path = self.cache_dir / f"expand_{_digest(request)}.json" if self.cache_dir else None
         if path and path.exists():
             return json.loads(path.read_text())["questions"]
