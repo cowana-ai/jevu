@@ -1,162 +1,142 @@
 # jevu
 
-Erase a **target concept** from text embeddings — defined in plain English, labeled
-zero-shot with [JEV](https://openrouter.ai/), and removed with a provable linear method
-([INLP](https://aclanthology.org/2020.acl-main.647/) or
-[LEACE](https://arxiv.org/abs/2306.03819)).
+Erase a **protected attribute** (gender, age, sentiment, "unsafe/NSFW") from text embeddings —
+**locally, for free, offline**. Define the concept in plain English, label it zero-shot with
+[**laya**](https://huggingface.co/convaiinnovations/laya) (an open-weights, on-device calibrated
+scorer), and remove its linear signal with a provable eraser
+([LEACE](https://arxiv.org/abs/2306.03819) / [INLP](https://aclanthology.org/2020.acl-main.647/)).
 
-You bring **(1) a concept as a question, (2) your raw texts, (3) their embeddings** from any
-off-the-shelf model. `jevu` labels the concept per text (no annotation needed) and
-returns embeddings with that concept's *linear* signal removed — while leaving the rest intact.
-Already have labels? Skip JEV and pass them directly.
-
-Bring **embeddings from any model** plus a **concept** — JEV labels the concept, the eraser removes it:
+You bring **(1) a concept as 1–2 yes/no questions, (2) your raw texts, (3) their embeddings** from any
+model. `jevu` labels the concept per text (no annotation), and returns embeddings with that concept's
+*linear* signal removed — leaving the rest intact. **Nothing leaves your machine**: laya runs locally,
+the erasers are pure numpy. That's exactly what sensitive data (NSFW, toxic, PII-adjacent) needs.
 
 ```python
-from jevu import ConceptScrubber
+from jevu import ConceptScrubber, LayaLabeler
 
-X = your_model.encode(texts)                 # embeddings from ANY model (jevu never embeds)
-scrubber = ConceptScrubber(concept="Does the text describe a woman?", method="leace")
-scrubber.fit(X, texts=texts)                 # JEV labels the concept, fits the eraser
-X_clean = scrubber.transform(X_new)          # erase the concept from new embeddings
+X = your_model.encode(texts)                           # embeddings from ANY model (jevu never embeds)
+# fully local: you give the questions, laya scores them on-device, LEACE erases — no API, no key
+scrubber = ConceptScrubber(labeler=LayaLabeler(questions=[
+    "Does the text describe a woman?", "Does the text describe a man?"]))
+X_clean = scrubber.fit_transform(X, texts=texts)
 
 print(scrubber.audit(X, texts=texts))
-# {'concept_auc_before': 1.00, 'concept_auc_after': 0.55, 'n_concepts': 1}
+# {'concept_auc_before': 1.00, 'concept_auc_after': 0.55, 'n_concepts': 2}
 ```
 
-Already have labels? Skip JEV entirely — it's then pure numpy/scikit-learn:
+Prefer to just name the attribute? `ConceptScrubber("gender")` has an LLM *write* the questions for
+you — convenient, but that one step calls OpenAI (needs `OPENAI_API_KEY`); laya scoring and erasure
+stay local. Already have labels? Skip the scorer entirely — then it's pure numpy/scikit-learn:
 
 ```python
-scrubber.fit(X, labels=y)                    # your embeddings and labels
+scrubber.fit(X, labels=y)                             # your embeddings and labels, no scorer at all
 ```
 
-### Multi-faceted concepts (LLM expansion)
+## Two paths — pick by the concept's *rank*
 
-Pass a high-level — even **terse or ambiguous** — attribute (`"gender"`, `"genders"`, `"age"`,
-`"tone"`) and let an LLM expand it into several concrete, discriminative yes/no questions (woman,
-man, gendered pronouns, ...); JEV scores each and the whole multi-dimensional concept is erased at
-once. This is the robust way to erase a bare word — a single raw noun often yields non-discriminative
-JEV scores and erases nothing:
+`jevu`'s sweet spot is **low-rank / binary protected attributes**, where one or two yes/no questions
+span the concept and laya drives the probe to chance. The `binary` flag selects the path:
 
 ```python
-scrubber = ConceptScrubber(concept="gender", expand=True, n_questions=6)
-scrubber.fit(X, texts=texts)                # X = your embeddings
-print(scrubber.concept_questions_)          # the sub-questions the LLM generated
-print(scrubber.audit(X, texts=texts))       # {'concept_auc_before':…, 'after':…, 'n_concepts': 6}
+# binary=True (default): LLM writes 2-3 yes/no questions, laya scores them locally, LEACE erases.
+#   Ideal for gender, age, sentiment, tone, "unsafe/NSFW" — laya's home turf.
+ConceptScrubber("gender", binary=True).fit_transform(X, texts=texts)
+
+# binary=False: LLM reads the attribute off each document (open-vocabulary), one-hots it, LEACE erases.
+#   For high-cardinality identities (occupation, topic). See the honest caveats below.
+ConceptScrubber("occupation", binary=False).fit_transform(X, texts=texts)
 ```
 
-**Keep only the most useful few** with `select_k`: over-generate a pool, then greedily keep the
-`select_k` questions that best reconstruct it — a cheap, reusable eraser. The picks are logged and
-stored in `scrubber.selected_questions_`:
+Pass your own questions for full control:
 
 ```python
-scrubber = ConceptScrubber(concept="occupation", expand=True, n_questions=20,
-                           select_k=3, select_sample=250)   # select on a 250-row sample
-scrubber.fit(X, texts=texts)
-print(scrubber.selected_questions_)         # the 3 the greedy search kept
-# INFO jevu.scrubber: greedy select 1/3: '...'  (then deploy just these 3 on new data)
+from jevu import ConceptScrubber, LayaLabeler
+Q = ["Does the text contain toxic, hateful, or unsafe content?",
+     "Does the text use insults, profanity, or offensive language?"]
+scrubber = ConceptScrubber(labeler=LayaLabeler(questions=Q, cache_dir=".cache"))
+X_clean = scrubber.fit_transform(X, texts=texts)
 ```
 
-`select_sample` scores the *pool* only on a random subset, then scores just the chosen `select_k` on
-the full data — cutting selection cost from `pool × n` to `pool × select_sample + select_k × n`.
-
-**Let the LLM decide how many** with `expand="auto"`: it judges the concept's cardinality and uses the
-*fewest* questions needed — **1–2 for a binary concept** (gender, sentiment) so it's fast, a covering
-set only for a **many-valued identity** (occupation, topic). Fewer questions = fewer JEV calls:
-
-```python
-ConceptScrubber(concept="gender",     expand="auto").fit(X, texts=texts)   # -> ~1-2 questions
-ConceptScrubber(concept="occupation", expand="auto").fit(X, texts=texts)   # -> a covering set (~15)
-```
+**Why laya.** It's an open-weights, local, calibrated typed-question scorer (same `noul = P(true)`
+output as hosted scorers) — no API, no per-call cost, offline, private. For a **low-rank** concept a
+couple of questions fully span it, so you get chance-level erasure on-device. (For high-cardinality
+*identities*, a single scorer under-spans the concept — see below.)
 
 ## Install
 
 ```bash
 pip install jevu              # core: numpy + scikit-learn only (the erasers)
-pip install "jevu[jev]"       # + httpx, for zero-shot concept labeling via JEV
-pip install "jevu[openai]"    # + openai, only for LLM concept expansion (expand=True)
-pip install "jevu[examples]"  # + pandas/matplotlib/jupyter, to run the example notebooks
+pip install "jevu[laya]"      # + laya (torch/transformers), for local zero-shot concept labeling
+pip install "jevu[openai]"    # + openai, only for LLM question-expansion / entity extraction
+pip install "jevu[examples]"  # + sentence-transformers/matplotlib/jupyter, to run the notebooks
 pip install "jevu[dev]"       # everything, incl. pytest (development)
 ```
 
-**jevu never computes embeddings** — you pass them in from any model. The core install is pure
-numpy/scikit-learn; `httpx` (JEV) and `openai` (concept expansion) are lazy extras. Set
-`OPENROUTER_API_KEY` for JEV labeling (and `OPENAI_API_KEY` if you use `expand=True`); pass
-`cache_dir=...` to cache scores on disk so re-runs are free.
+**jevu never computes embeddings** — you pass them in from any model (local or hosted). Set
+`OPENAI_API_KEY` only if you use `expand=True` / `binary=False` (the LLM step); laya scoring needs no
+key. Pass `cache_dir=...` to cache scores on disk so re-runs are free.
+
+## Examples
+
+Runnable notebooks in [`examples/`](examples):
+
+- **`nsfw_erasure.ipynb`** — erase "unsafe/NSFW" content **fully locally** (local embeddings + laya +
+  LEACE) on the open-source `wiki_toxic` data; probe AUC 0.92 → ~0.3, with PCA, clustering, and
+  retrieval before/after. The flagship for *private, offline* erasure.
+- **`gender_erasure.ipynb`** — gender erasure with before/after PCA.
+- **`search_debias.ipynb`** — top-k retrieval before/after erasing gender from query + document
+  embeddings.
 
 ## How it works (the math)
 
 A concept `c` is **linearly encoded** in an embedding `x` if a linear probe reads it:
-`p(c|x) = σ(wᵀx + b)`. The unit direction `û = w/‖w‖` is the axis along which the concept varies.
+`p(c|x) = σ(wᵀx + b)`. The unit direction `û = w/‖w‖` is the axis the concept varies along.
 
-**Remove one direction (nullspace projection).** Split `x = x∥ + x⊥` into its component along
-`û` and the rest. The projection
+**Remove the direction (nullspace projection).** With `P = I − û ûᵀ`, `x' = Px` zeroes the concept
+coordinate (`ûᵀx' = 0`), so a probe that relied on `û` now reads a constant.
 
-```
-P = I − û ûᵀ,      x' = P x = x − (ûᵀx) û
-```
-
-zeroes the concept coordinate: `ûᵀx' = ûᵀx − (ûᵀx)(ûᵀû) = 0` (using `ûᵀû = 1`). A probe that
-relied on `û` now reads a constant → the concept is unreadable along that axis.
-
-- **INLP** (`method="inlp"`) repeats {fit probe → project out its direction} until no linear
-  probe beats chance. Robust, iterative; can over-project if run too long (early-stopped here).
 - **LEACE** (`method="leace"`, default) is the closed-form optimum: an affine map that makes
-  `cov(r(X), c) = 0` *exactly*, with the least squared change to `x`. One shot, minimal damage.
+  `cov(r(X), c) = 0` *exactly*, with the least squared change to `x`. It whitens, projects out the
+  concept subspace, un-whitens — removing ~`rank` directions in one shot.
+- **INLP** (`method="inlp"`) iterates {fit probe → project out its direction} until no probe beats
+  chance. Robust; can over-project if run too long (early-stopped here).
 
-Because the concept often correlates with what you want to keep, erasure trades a little utility
-for fairness — measure it with `audit()` / `tpr_gap()`.
+Erasing a `k`-dimensional concept needs ~`k` directions — which is why **binary attributes are easy**
+(1–2 questions) and high-cardinality identities are hard.
 
 ## API
 
-- `ConceptScrubber(concept=None, method="leace", labeler=None, **eraser_kwargs)` — high level.
+- `ConceptScrubber(concept=None, method="leace", binary=True, labeler=None, **eraser_kwargs)`
   - `.fit(embeddings, texts=None, labels=None)`, `.transform(X)`, `.fit_transform(...)`, `.audit(...)`.
+- `LayaLabeler(concept=None, questions=[...], model="convaiinnovations/laya", device=None, cache_dir=...)`
+  — local scorer: `.score(texts)`, `.score_questions(qs, texts)`, `.label(texts)`.
+- `EntityExtractor(concept, llm_model=..., cache_dir=...)` — per-doc extraction → one-hot (`binary=False`).
 - `LeaceEraser()`, `InlpEraser(max_iters=20, tol_auc=0.55)` — low-level `fit(X, y)/transform(X)`.
-- `JevLabeler(concept, cache_dir=..., client=...)` — `.score(texts) -> [0,1]`, `.label(texts) -> {0,1}`.
 - `concept_auc(X, y)`, `erasure_report(X_before, X_after, y)`, `tpr_gap(true, pred, group)` — auditing.
 
-## Progress & logging
+## Performance & logging
 
-JEV scoring shows a `tqdm` progress bar by default (disable with `progress=False` on
-`ConceptScrubber(..., )` components, or it silently no-ops if `tqdm` isn't installed). The library
-logs to the `jevu` logger via Python's standard `logging` and attaches a `NullHandler`, so it's quiet
-until you opt in:
+laya scoring runs on-device (GPU/`mps`/CPU; set `device=...`, `batch_size=...`), shows a `tqdm` bar,
+and **caches every `(model, question, text)` score** (`cache_dir=...`) so re-runs are free. The
+erasers are fast numpy. The library logs to the `jevu` logger with a `NullHandler` — opt in with
+`logging.basicConfig(level=logging.INFO)`.
 
-```python
-import logging
-logging.basicConfig(level=logging.INFO)    # see labeling / expansion / erasure details
-# keep jevu logs but silence the OpenAI/OpenRouter (httpx) request spam:
-for _n in ("httpx", "httpcore", "openai"):
-    logging.getLogger(_n).setLevel(logging.WARNING)
-```
+## Honest limits (high-cardinality & OOD)
 
-## Performance
-
-The cost is the JEV HTTP calls (network-bound), so **threading is the right tool and is already used**
-— calls run concurrently via a thread pool with a shared, pooled HTTP client. Multiprocessing would
-not help (it's for CPU-bound work) and would add overhead. To go faster:
-
-- **Raise concurrency:** `ConceptScrubber(..., max_workers=24)` (default 8). Higher = more parallel
-  JEV calls, subject to rate limits (429s are retried with backoff).
-- **`expand=True` scores all `questions x texts` cells in one pool**, not one question at a time.
-- **Cache:** pass `cache_dir=...` — every score is cached per `(model, text, question)`, so re-runs and
-  repeated texts are free. The slow case is always a cache *miss* (new concept/text).
-
-The erasers themselves (LEACE/INLP) are fast numpy and not the bottleneck.
-
-## When to use JEV vs. your own labels
-
-The erasure math only needs *a* label per example. If you **already have** the attribute labeled,
-use them — they're exact. JEV's value is when the attribute is **unlabeled** (most real corpora),
-or the concept is bespoke ("sounds formal", "mentions a competitor") with no dataset — then one
-sentence replaces an annotation campaign, and the labels are calibrated.
+- **High-cardinality identities** (occupation, topic) are a different regime: one scorer under-spans
+  the ~`k`-dim concept, so `binary=False` (per-doc extraction → one-hot) erases far more than scored
+  questions — but completeness trades off against collateral damage, and it's O(N) LLM calls.
+- **Linear erasure is subspace-specific.** It removes exactly the directions spanned by your fit data;
+  it does **not** generalize to concepts/values your corpus never contained (re-fit when the
+  distribution shifts).
+- **Erasure ≠ content filter.** It removes the *latent* direction, not the words. Pair with filtering
+  if you must block content.
 
 ## References
 
-- Ravfogel, Elazar, Gonen, Twiton, Goldberg. *Null It Out: Guarding Protected Attributes by
-  Iterative Nullspace Projection.* ACL 2020. (INLP)
 - Belrose et al. *LEACE: Perfect Linear Concept Erasure in Closed Form.* NeurIPS 2023.
-- De-Arteaga et al. *Bias in Bios.* FAT* 2019. (evaluation dataset)
+- Ravfogel et al. *Null It Out (INLP).* ACL 2020.
+- laya — *convaiinnovations/laya* (open-weights calibrated decision model). `wiki_toxic` (evaluation).
 
 ## License
 
