@@ -21,6 +21,7 @@ import numpy as np
 from .audit import concept_auc
 from .concepts import LLMConceptLabeler
 from .erasers import InlpEraser, LeaceEraser
+from .extractors import EntityExtractor
 from .laya_labeler import LayaLabeler
 
 logger = logging.getLogger(__name__)
@@ -56,15 +57,26 @@ def _greedy_select(Z: np.ndarray, k: int, questions: Sequence[str]) -> list:
 class ConceptScrubber:
     """Erase a target concept from embeddings you provide.
 
+    Two paths, chosen by ``binary`` (the right one depends on the concept's *rank*):
+
+    * ``binary=True`` (default) -- **low-rank / binary concepts** (gender, sentiment, tone). The LLM
+      writes 2-3 yes/no questions (or you pass one via ``expand=False``), **laya** scores them
+      locally, and LEACE erases. One-two questions span the concept, so this drives the probe to
+      chance -- laya's sweet spot (free, local, offline).
+    * ``binary=False`` -- **high-cardinality identities** (occupation, topic, nationality). The LLM
+      **extracts** the attribute value from each document (open-vocabulary), the values are one-hot
+      encoded, and LEACE erases. This discovers the full vocabulary present -- including the rare
+      tail -- and erases far more of the concept than scored questions.
+
     Parameters
     ----------
-    concept : the concept to erase. A yes/no question when ``expand=False``; a high-level
-        attribute (e.g. ``"gender"``) when ``expand=True``.
+    concept : the concept to erase. A yes/no question or attribute word for ``binary=True``; the
+        attribute to read off each document (e.g. ``"occupation"``) for ``binary=False``.
+    binary : pick the path above. ``True`` = laya-scored questions; ``False`` = LLM entity extraction.
     method : ``"leace"`` (default, closed-form, minimal-damage) or ``"inlp"`` (iterative).
-    expand : ``False`` (score the concept as one question), ``True`` (LLM expands into exactly
-        ``n_questions`` sub-questions), or ``"auto"`` (the LLM decides how many -- one for a binary
-        concept like gender, a covering set only for a many-valued identity like occupation).
-    n_questions : number of sub-questions when ``expand=True``; the cap when ``expand="auto"``.
+    expand : only for ``binary=True``. ``False`` (score the concept as one question), ``True`` (LLM
+        expands into ``n_questions`` sub-questions), or ``"auto"`` (the LLM decides how many).
+    n_questions : number of sub-questions when ``binary=True, expand=True``; the cap when ``"auto"``.
     select_k : if set (with expansion), greedily keep only the ``select_k`` questions that best
         reconstruct the full pool, and erase just those -- a cheap, reusable eraser. The picks are
         logged and stored in ``selected_questions_``.
@@ -80,17 +92,18 @@ class ConceptScrubber:
     """
 
     def __init__(self, concept: Optional[str] = None, method: str = "leace", *,
-                 expand=False, n_questions: int = 6, max_questions: int = 24,
+                 binary: bool = True, expand=True, n_questions: int = 3, max_questions: int = 24,
                  select_k: Optional[int] = None, select_sample: Optional[int] = None,
                  random_state: int = 0, labeler=None,
                  laya_model: str = "convaiinnovations/laya", llm_model: str = "gpt-4o-mini",
                  device: Optional[str] = None, cache_dir: Optional[str] = None, batch_size: int = 16,
-                 openai_api_key: Optional[str] = None,
+                 max_workers: int = 16, openai_api_key: Optional[str] = None,
                  **eraser_kwargs):
         if method not in _ERASERS:
             raise ValueError(f"method must be one of {sorted(_ERASERS)}")
         self.concept = concept
         self.method = method
+        self.binary = binary
         self.expand = expand
         self.n_questions = n_questions
         self.max_questions = max_questions
@@ -103,6 +116,7 @@ class ConceptScrubber:
         self.device = device
         self.cache_dir = cache_dir
         self.batch_size = batch_size
+        self.max_workers = max_workers
         self._openai_api_key = openai_api_key
         self.eraser = _ERASERS[method](**eraser_kwargs)
 
@@ -111,7 +125,13 @@ class ConceptScrubber:
             if self.concept is None:
                 raise ValueError("no labels given and no concept/labeler set; "
                                  "pass concept=..., labeler=..., or labels=...")
-            if self.expand:
+            if not self.binary:
+                # high-cardinality path: LLM reads the attribute off each doc -> one-hot -> LEACE
+                self._labeler = EntityExtractor(
+                    self.concept, llm_model=self.llm_model, openai_api_key=self._openai_api_key,
+                    cache_dir=self.cache_dir, max_workers=self.max_workers)
+            elif self.expand:
+                # binary/low-rank path: LLM writes 2-3 questions, laya scores them
                 nq = "auto" if self.expand == "auto" else self.n_questions
                 self._labeler = LLMConceptLabeler(
                     self.concept, n_questions=nq, max_questions=self.max_questions,
@@ -119,6 +139,7 @@ class ConceptScrubber:
                     openai_api_key=self._openai_api_key, device=self.device,
                     cache_dir=self.cache_dir, batch_size=self.batch_size)
             else:
+                # binary path, single explicit question: laya scores the concept directly
                 self._labeler = LayaLabeler(self.concept, model=self.laya_model, device=self.device,
                                             cache_dir=self.cache_dir, batch_size=self.batch_size)
         return self._labeler

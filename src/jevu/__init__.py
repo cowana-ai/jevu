@@ -9,6 +9,7 @@ import logging as _logging
 from .audit import concept_auc, erasure_report, tpr_gap
 from .concepts import LLMConceptLabeler
 from .erasers import InlpEraser, LeaceEraser
+from .extractors import EntityExtractor
 from .laya_labeler import LayaLabeler
 from .scrubber import ConceptScrubber
 
@@ -22,6 +23,7 @@ __all__ = [
     "InlpEraser",
     "LeaceEraser",
     "LayaLabeler",
+    "EntityExtractor",
     "LLMConceptLabeler",
     "concept_auc",
     "erasure_report",
