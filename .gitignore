@@ -13,6 +13,7 @@ venv/
 .jev_debias_cache/
 .jevu_cache/
 .nsfw_cache/
+.gender_cache/
 *.tmp
 .pytest_cache/
 .ruff_cache/
