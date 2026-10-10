@@ -9,7 +9,7 @@ Let's build LEACE from the ground up. I'll assume you know vectors, matrices, an
 We have two things, both as matrices where **each row is one data point**:
 
 - `X` — your embeddings. `N` points (texts), each a vector in `ℝᵈ` (say `d = 1536`).
-- `Z` — the concept. Same `N` points, each a vector in `ℝᵏ` (for gender, `k = 1`; for occupation, `k ≈ 15`).
+- `Z` — the concept. Same `N` points, each a vector in `ℝᵏ` (`k = 1` for a binary attribute like gender; `k > 1` for a multi-faceted one).
 
 **The question of the whole lesson:** can we transform `X` so that `Z` becomes *impossible to read with a straight ruler* (a linear probe), while barely moving the points?
 
@@ -106,7 +106,7 @@ The covariance becomes the **identity** — the ellipse becomes a unit ball. All
 Now we just do the naive thing, but in the whitened world:
 
 1. **Whiten.** Send `x̃ ↦ W x̃`. Round ball.
-2. **Locate the concept there.** The concept directions transform too: in whitened space they span `col(M)` where `M = W Σ_XZ`. Take an orthonormal basis `U` of `col(M)` (via SVD of `M`). The number of basis vectors — `rank(M)` — is **how many dimensions the concept occupies** (≈ `k`: one for gender, several for occupation).
+2. **Locate the concept there.** The concept directions transform too: in whitened space they span `col(M)` where `M = W Σ_XZ`. Take an orthonormal basis `U` of `col(M)` (via SVD of `M`). The number of basis vectors — `rank(M)` — is **how many dimensions the concept occupies** (≈ `k`: one for a binary attribute, several for a multi-faceted one).
 3. **Project the concept out.** Apply `I − U Uᵀ`: flatten the ball along exactly the concept directions.
 4. **Un-whiten.** Send it back with `W⁻¹ = Σ^{1/2}`, and add the mean back.
 
@@ -142,7 +142,7 @@ A linear probe reads a concept only through the **cross-covariance** `Σ_XZ`, so
 ## Key facts to remember
 
 - **Linear readability lives in one matrix.** A linear probe can recover `Z` from `X` **iff** the cross-covariance `Σ_XZ ≠ 0`. Erasing a concept = making `Σ_XZ = 0`. Nothing else matters to a *linear* probe.
-- **The concept subspace is `col(Σ_XZ)`.** Its dimension (`≈ k`) is how many directions you must remove — 1 for gender, several for occupation. "Erase a `k`-dim concept ⇒ remove ~`k` directions."
+- **The concept subspace is `col(Σ_XZ)`.** Its dimension (`≈ k`) is how many directions you must remove — 1 for a binary attribute, several for a multi-faceted one. "Erase a `k`-dim concept ⇒ remove ~`k` directions."
 - **`U Uᵀ` projects onto a subspace; `I − U Uᵀ` projects it away.** Requires `U` to have *orthonormal* columns (`UᵀU = I`). This is the one tool doing the removal.
 - **Naive projection over-damages** because embeddings are a tilted, stretched ellipse (`Σ ≠ I`). "Perpendicular" in a stretched space is not the direction of least change.
 - **Whitening makes the metric honest.** `W = Σ^{-1/2}` turns the ellipse into a unit ball, so ordinary orthogonal projection becomes the minimal-damage operation. `Σ^{1/2}` undoes it.

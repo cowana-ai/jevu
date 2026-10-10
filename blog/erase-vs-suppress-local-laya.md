@@ -50,8 +50,7 @@ Result on `wiki_toxic` (local MiniLM embeddings):
 - **retrieval homophily: 0.65 → 0.53** (unsafe docs no longer attract unsafe)
 
 For a **binary/low-rank** concept, one or two questions span it, so LEACE drives the probe to chance.
-(High-cardinality *identities* — occupation, topic — are a different, harder regime; see the repo's
-limits section.)
+(Many-valued *identities* are a harder regime, out of scope for this local/low-rank story.)
 
 ## The inference problem: at serve time you only have embeddings
 
