@@ -81,11 +81,12 @@ key. Pass `cache_dir=...` to cache scores on disk so re-runs are free.
 Runnable notebooks in [`examples/`](examples):
 
 - **`nsfw_erasure.ipynb`** — erase "unsafe/NSFW" content **fully locally** (local embeddings + laya +
-  LEACE) on the open-source `wiki_toxic` data; probe AUC 0.92 → ~0.3, with PCA, clustering, and
-  retrieval before/after. The flagship for *private, offline* erasure.
-- **`gender_erasure.ipynb`** — gender erasure with before/after PCA.
-- **`search_debias.ipynb`** — top-k retrieval before/after erasing gender from query + document
-  embeddings.
+  LEACE) on the open-source `wiki_toxic` data; probe AUC 0.92 → ~0.3, with PCA + clustering, plus
+  **text-free detection** and **query-shift safety steering** for retrieval. The flagship for
+  *private, offline* control.
+- **`gender_erasure.ipynb`** — erase gender locally on `bias_in_bios` (probe AUC 0.99 → 0.11), with
+  before/after PCA and a **debias-search** section (top-10 %female moves toward balance over the
+  erased embeddings).
 
 ## How it works (the math)
 
