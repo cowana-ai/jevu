@@ -1,8 +1,14 @@
-# Erasing Concepts from Embeddings — in Plain English
+# Erasing Concepts from Embeddings — the high-cardinality deep-dive
 
-*You can remove gender, occupation, or any attribute you can name from off-the-shelf embeddings —
-label it zero-shot with an LLM, erase it in closed form, and actually see which parts of your data
-got cleaned.*
+*Removing a many-valued identity (occupation) from embeddings: expand a word into questions, erase in
+closed form, see exactly which slices get cleaned — and why this hard case has fundamental limits.*
+
+> **Read this second.** For the practical, fully-local story on **low-rank protected attributes**
+> (gender, age, NSFW) — what `jevu` is really for — see
+> [**erase-vs-suppress-local-laya.md**](erase-vs-suppress-local-laya.md). This companion is the
+> deep-dive on the *hard* case: a **high-cardinality identity** (28-way occupation). `jevu` now scores
+> locally with **laya**; the original study used the hosted scorer `jevu` first wrapped, but the
+> conclusions (the rank law, AUC-vs-accuracy, "erasure removes correlates") are scorer-independent.
 
 ---
 
@@ -90,12 +96,12 @@ identity — pass `expand="auto"`. But the select stage below wants an explicit 
 
 ### Step 2 — Score a sample into a matrix `Z`
 
-Now the questions are scorable. **JEV** is a calibrated per-question scorer: hand it a text and a
-yes/no question, get back a number in `[0, 1]`. No training set, no threshold tuning. Run it over a
-**sample of `n` rows × the `p` questions** and you get a score matrix:
+Now the questions are scorable. **laya** is a calibrated per-question scorer (local, open-weights):
+hand it a text and a yes/no question, get back a number in `[0, 1]`. No training set, no threshold
+tuning. Run it over a **sample of `n` rows × the `p` questions** and you get a score matrix:
 
 ```
-Z ∈ ℝ^{n × p},   Z[i, j] = JEV(text_i, question_j) ∈ [0, 1]
+Z ∈ ℝ^{n × p},   Z[i, j] = laya(text_i, question_j) ∈ [0, 1]
 ```
 
 Here's the way I think about `Z`: it's a tiny, *interpretable* embedding. Every column is a named
@@ -214,7 +220,7 @@ r(x) = μ + Σ^{1/2} · P · Σ^{-1/2} · (x − μ),      P = I − U Uᵀ
 Because the projection kills exactly the whitened concept subspace, you get `cov(r(X), Z) = 0` for
 free — **no linear probe can recover the concept.** And because it's an orthogonal projection *in the
 whitened metric*, it's the least-squares-optimal such map: the smallest distortion of `x` that
-achieves erasure. One closed-form shot, no iteration. (If you already have hard labels instead of JEV
+achieves erasure. One closed-form shot, no iteration. (If you already have hard labels instead of laya
 scores, pass those as `Z` — the math doesn't care.)
 
 ---
@@ -333,16 +339,17 @@ the data tell the same story.
 
 ## Making it cheap
 
-The cost here is the scoring calls, which are network-bound. Two things keep it manageable, beyond the
-select-on-a-sample trick from Step 3:
+With **laya the scoring runs on-device** (GPU/`mps`/CPU), so the cost is local compute, not network.
+Two things keep it manageable, beyond the select-on-a-sample trick from Step 3:
 
-- **I fit the eraser on the full set, not the sample — on purpose.** Selection only needs enough rows
-  to *rank* questions, but LEACE estimates a covariance in the full 1536-dim embedding space, which
-  needs rows to be well-conditioned. Scoring the three winners on everything is cheap, so I select on
-  250 and fit on all. Best of both.
-- **Everything is threaded and cached.** All `questions × texts` cells score concurrently through one
-  pooled HTTP client, and every score is cached per `(model, text, question)` — so re-runs and
-  repeated texts are free.
+- **Fit the eraser on the full set, not the sample — on purpose.** Selection only needs enough rows to
+  *rank* questions, but LEACE estimates a covariance in the full embedding dimension, which needs rows
+  to be well-conditioned. Scoring the few winners on everything is cheap, so select on 250 and fit on
+  all.
+- **Batched and cached.** laya answers all questions for a text in one forward pass (`batch_size`
+  controls throughput), and every score is cached per `(model, text, question)` — so re-runs and
+  repeated texts are free. (The original hosted-scorer study was network-bound and threaded; local laya
+  makes it compute-bound and private.)
 
 ---
 
@@ -374,15 +381,41 @@ faith — you can read, concept by concept, exactly what you let go.
 
 ---
 
+## Postscript: what I learned after this
+
+This deep-dive left the high-cardinality case "mostly top-1 erased, AUC still high." Chasing that
+further turned up three things worth carrying forward:
+
+- **Extraction beats questions for a many-valued identity.** Instead of scoring a question pool, have
+  the LLM *read the attribute off each document* (open-vocabulary), one-hot it, and LEACE that. It
+  discovers the full vocabulary — including the rare tail the question pool missed — and lands far
+  lower (occupation AUC **≈0.64 vs ≈0.80** for 15 questions). That's `ConceptScrubber(..., binary=False)`.
+- **Erasure removes *correlates*, not the concept.** A counterfactual test (swap only the occupation,
+  hold the person fixed; use the embedding difference) gives a *causal* direction that's perfectly
+  selective but barely dents the probe — because a probe rides **spurious correlates** (context,
+  vocabulary), not the causal axis. That's also *why* correlational erasure damages correlated
+  attributes (erasing occupation nicked gender). Causal vs correlational concept directions are
+  genuinely different objects.
+- **Linear erasure doesn't generalize out-of-distribution.** An eraser fit on your occupations leaves
+  *unseen* occupations (astronaut, chef) fully recoverable (~1.0 AUC). It removes the subspace spanned
+  by your data — nothing more. Re-fit when the vocabulary shifts.
+
+The practical upshot of all of it: **lead with low-rank protected attributes** (gender, age, NSFW),
+where one or two local laya questions drive the probe to chance — see the companion,
+[erase-vs-suppress-local-laya.md](erase-vs-suppress-local-laya.md).
+
+---
+
 ## Try it
 
 ```bash
-pip install "jevu[jev,openai]"
+pip install "jevu[laya,openai]"
 ```
 
-The runnable notebooks are in [`examples/`](../examples): `occupation_erasure.ipynb` (the top-k sweep,
-before/after PCA, and the profession-coverage charts), `gender_erasure.ipynb`, and `search_debias.ipynb`
-(top-k retrieval before and after erasing gender from query + document embeddings).
+The runnable notebooks are in [`examples/`](../examples): `gender_erasure.ipynb` (erase gender locally
++ debias search) and `nsfw_erasure.ipynb` (erase / detect / suppress unsafe content, fully local). The
+occupation example from this study has been retired — it was the hard case; the library now leads with
+the low-rank protected-attribute recipe.
 
 ### References
 
@@ -390,3 +423,4 @@ before/after PCA, and the profession-coverage charts), `gender_erasure.ipynb`, a
   Erasure in Closed Form.* NeurIPS 2023.
 - De-Arteaga et al. *Bias in Bios: A Case Study of Semantic Representation Bias in a High-Stakes
   Setting.* FAT\* 2019. (evaluation dataset)
+- laya — *convaiinnovations/laya* (open-weights, local calibrated scorer; the default in `jevu`).
