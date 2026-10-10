@@ -7,7 +7,7 @@ name = "jevu"
 version = "0.1.0"
 description = "Erase a target concept from text embeddings, labeled zero-shot with laya."
 readme = "README.md"
-requires-python = ">=3.9"
+requires-python = ">=3.10"
 license = { text = "MIT" }
 authors = [{ name = "Chingis Oinar" }]
 keywords = ["embeddings", "debiasing", "fairness", "concept-erasure", "inlp", "leace", "laya"]
@@ -26,11 +26,13 @@ dependencies = [
 [project.optional-dependencies]
 laya = ["laya>=0.4", "tqdm>=4.60"]          # local, free zero-shot concept labeling via laya (+ progress)
 openai = ["openai>=1.0"]                     # LLM concept expansion (expand=True)
-examples = [                                 # run the example notebooks (incl. BYO embeddings)
-    "laya>=0.4", "tqdm>=4.60", "openai>=1.0", "pandas>=1.3", "matplotlib>=3.5", "jupyter",
+examples = [                                 # run the example notebooks (incl. local embeddings)
+    "laya>=0.4", "sentence-transformers>=2.2", "tqdm>=4.60", "openai>=1.0",
+    "pandas>=1.3", "matplotlib>=3.5", "jupyter",
 ]
 dev = [                                      # everything for development (tests + notebooks)
-    "pytest>=7", "laya>=0.4", "tqdm>=4.60", "openai>=1.0", "pandas>=1.3", "matplotlib>=3.5", "jupyter",
+    "pytest>=7", "laya>=0.4", "sentence-transformers>=2.2", "tqdm>=4.60", "openai>=1.0",
+    "pandas>=1.3", "matplotlib>=3.5", "jupyter",
 ]
 
 [project.urls]
