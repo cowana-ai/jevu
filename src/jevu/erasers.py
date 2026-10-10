@@ -142,6 +142,17 @@ class LeaceEraser:
         Sxx = (Xc.T @ Xc) / n + self.shrinkage * np.eye(d)
         Sxz = (Xc.T @ zc) / n                      # (d, k) cross-covariance
 
+        # Raw (un-whitened) concept direction -- a free byproduct, for DETECTION / STEERING.
+        # Sum the per-column directions into one, normalize, orient so + = concept present.
+        direction = Sxz.sum(axis=1)                # (d,) collapse the k question directions
+        nrm = float(np.linalg.norm(direction))
+        if nrm > 0:
+            direction = direction / nrm
+            proj, zc_sum = Xc @ direction, zc.sum(axis=1)
+            if proj.std() > 0 and zc_sum.std() > 0 and np.corrcoef(proj, zc_sum)[0, 1] < 0:
+                direction = -direction
+        self.concept_direction_ = direction        # unit vector; use to score/steer, not whitened
+
         # Whitening W = Sxx^{-1/2} and its inverse Sxx^{1/2} via symmetric eigendecomp.
         vals, vecs = np.linalg.eigh(Sxx)
         vals = np.clip(vals, 1e-12, None)
@@ -168,3 +179,27 @@ class LeaceEraser:
 
     def fit_transform(self, X, z) -> np.ndarray:
         return self.fit(X, z).transform(X)
+
+    # -- reuse the SAME fit for detection / retrieval steering -------------------
+    # `transform` erases (makes the concept invisible). The two methods below instead *use* the
+    # concept: `score` reads how strongly a vector expresses it, `steer` demotes it in retrieval.
+    # Both rely on `concept_direction_` (the raw cross-covariance direction), NOT the whitened
+    # erase operator -- whitening is tuned for minimal-damage erasure, which is the wrong objective
+    # for detection.
+    def score(self, X) -> np.ndarray:
+        """Signed concept score per row: ``(x − mean)·û``. Higher = concept more present.
+
+        Text-free: works on embeddings alone, so it detects the concept on unseen vectors."""
+        if not hasattr(self, "concept_direction_"):
+            raise RuntimeError("call fit before score")
+        return (_as_2d(X) - self.mean_) @ self.concept_direction_
+
+    def steer(self, q, alpha: float = 1.0) -> np.ndarray:
+        """Shift a query to demote concept-y documents in retrieval: ``q − α·û``.
+
+        Searching the *original* index with the steered query subtracts ``α·(û·x)`` from each
+        document's similarity, i.e. sinks documents that express the concept. ``alpha`` tunes the
+        strength (0 = off). Returns the same shape as ``q``."""
+        if not hasattr(self, "concept_direction_"):
+            raise RuntimeError("call fit before steer")
+        return np.asarray(q, dtype=float) - alpha * self.concept_direction_

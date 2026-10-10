@@ -67,3 +67,26 @@ def test_inlp_stops_when_no_concept():
     er = InlpEraser().fit(X, z)
     assert er.n_iters_ == 0
     assert np.allclose(er.transform(X), X)
+
+
+def test_leace_concept_direction_score_steer():
+    # separable binary concept: class 1 shifted along axis 0
+    import numpy as np
+    from jevu import LeaceEraser
+    rng = np.random.default_rng(0)
+    n = 400
+    y = rng.integers(0, 2, n).astype(float)
+    X = rng.standard_normal((n, 12)); X[:, 0] += 4.0 * y
+    er = LeaceEraser().fit(X, y)
+    # concept_direction_ is a unit vector
+    u = er.concept_direction_
+    assert u.shape == (12,)
+    assert abs(np.linalg.norm(u) - 1.0) < 1e-6
+    # score separates the classes, oriented so + = concept present
+    s = er.score(X)
+    assert s[y == 1].mean() > s[y == 0].mean()
+    from sklearn.metrics import roc_auc_score
+    assert roc_auc_score(y, s) > 0.9
+    # steer subtracts alpha * direction from the query
+    q = rng.standard_normal(12)
+    assert np.allclose(er.steer(q, 2.0), q - 2.0 * u)
