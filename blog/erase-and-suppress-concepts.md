@@ -26,19 +26,18 @@ These are opposite operations on the same quantity, and that distinction is the 
 across. The good news is that both come out of a single fit, and both run locally. Let me build up the
 method first, then go through each use case with real numbers and figures.
 
-## Keeping it local
+## Experimental setup
 
-One thing I want to flag early, because it shaped the rest of the design: all of this runs on your own
-machine. That's not just a nice-to-have. The data you'd most want to clean up — toxic comments, NSFW
-text, anything close to PII — is exactly the data you can't ship off to some hosted API just to get it
-scored. So I kept hosted services out of the loop entirely.
+I kept everything local, so the text never had to leave the machine. The pieces I used:
 
-There are three pieces. The embeddings come from a local model (I used `all-MiniLM-L6-v2`, but you can
-bring your own). The scoring is done by [laya](https://huggingface.co/convaiinnovations/laya), a small
-open-weights model that answers a yes/no question about a text with a calibrated probability between 0
-and 1 — it runs on your GPU, no key, no network. And the eraser itself,
-[LEACE](https://arxiv.org/abs/2306.03819), is just numpy. So from raw text to a cleaned embedding,
-nothing ever leaves the box.
+- **Embeddings:** `all-MiniLM-L6-v2` (sentence-transformers), 384-dimensional.
+- **Concept scoring:** [laya](https://huggingface.co/convaiinnovations/laya), a small open-weights model
+  that takes a text and a yes/no question and returns a calibrated probability in `[0, 1]`.
+- **Erasure:** [LEACE](https://arxiv.org/abs/2306.03819), computed in numpy.
+- **Data:** `bias_in_bios` (professional bios labeled by gender) for the gender experiments, and
+  `wiki_toxic` (comments labeled toxic / safe) as a stand-in for unsafe content.
+
+All the numbers below are on held-out data.
 
 ## How erasure works
 
