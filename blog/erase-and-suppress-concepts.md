@@ -41,42 +41,88 @@ All the numbers below are on held-out data.
 
 ## How erasure works
 
-A concept is *linearly encoded* in an embedding `x` when some direction `û` predicts it: a probe reads
-`σ(wᵀx)`. If you strip out the part of `x` that lies along `û`, the probe just sees a constant and the
-concept becomes unreadable along that axis.
+Let me build this up from scratch, because the final formula looks intimidating but each piece is simple.
 
-The obvious thing to try is to subtract that direction, `x − (ûᵀx) û`. That only behaves well if the
-coordinates of your embedding are uncorrelated and have equal variance, and they never are. Embeddings
-sit in a stretched, tilted ellipse, so projecting along a raw axis also drags along every direction
-correlated with it, and you end up removing more than you meant to.
+**What "linearly encoded" means, and the goal.** A concept is *linearly encoded* in an embedding `x`
+when some direction `û` predicts it: a probe reads `σ(wᵀx)`, and the unit vector `û = w/‖w‖` is the axis
+the concept varies along. A linear probe can only pick up the concept if moving along some direction
+changes it in a systematic way — and "systematic co-movement" is exactly covariance. So the formal goal
+of erasure is to produce `r(x)` with
 
-The key idea is to first move into a space where the cloud is a round ball, because *there* a plain
-perpendicular projection is the least-damaging way to delete a direction. That move is whitening. With
-`Σ = cov(X)`, set `W = Σ^{-1/2}`. The reason it works is one line:
+```
+cov( r(X), Z ) = 0
+```
+
+where `Z` is the concept (the scores). If that cross-covariance is zero, there is no direction a linear
+probe can lean on, and the concept is unreadable.
+
+**The one-direction case.** Suppose the concept is a single unit direction `û`. To remove it, subtract
+the component of `x` along `û`:
+
+```
+P = I − û ûᵀ ,     x' = P x = x − (ûᵀx) û
+```
+
+Check that it worked: `ûᵀx' = ûᵀx − (ûᵀx)(ûᵀû) = ûᵀx − ûᵀx = 0`, using `ûᵀû = 1`. The concept coordinate
+is now zero for every `x`, so a probe that relied on `û` reads a constant. `û ûᵀ` here is the projector
+*onto* the concept line; `I − û ûᵀ` is the projector onto everything else.
+
+**Why that naive version over-damages.** Subtracting `û` is only the *minimal* change if the embedding's
+coordinates are uncorrelated and have equal variance. They never are — embeddings sit in a stretched,
+tilted ellipse, so some directions carry far more variance and neighbouring directions are correlated.
+In that geometry, deleting `û` also disturbs every direction that co-varies with it, and "closest point"
+isn't the naive perpendicular. You remove more than you meant to.
+
+**Whitening fixes the geometry.** The key idea is to first transform into a space where the cloud is a
+round ball, because there the ordinary perpendicular projection *is* the least-damaging way to delete a
+direction. Let `Σ = cov(X)`. Since `Σ` is symmetric positive-definite, it has an eigendecomposition
+`Σ = Q Λ Qᵀ` (`Q` rotates to the ellipse's axes, `Λ` holds the variances along them). Define the
+**whitening map** by taking the inverse square root along each axis:
+
+```
+W = Σ^{-1/2} = Q Λ^{-1/2} Qᵀ       (rotate to axes → divide each by its √variance → rotate back)
+```
+
+The point of `W` is that it makes the covariance isotropic:
 
 ```
 cov(WX) = W Σ Wᵀ = Σ^{-1/2} Σ Σ^{-1/2} = I
 ```
 
-The covariance divides itself out, so the ellipse becomes a unit ball. Now perpendicular really means
-perpendicular in every direction equally. Putting everything together, LEACE is three steps — whiten,
-project the concept out, un-whiten:
+Every direction now has variance 1 and no correlations — the ellipse is a unit ball, and perpendicular
+means the same thing in all directions. `W⁻¹ = Σ^{1/2}` is the inverse map that un-whitens.
+
+**Finding the concept subspace — in the whitened space.** Where does the concept live now? The directions
+that carry it are the cross-covariance `Σ_XZ = cov(X, Z)` (shape `d × k`, one column per question). In
+whitened coordinates those become `W·Σ_XZ`, because `cov(WX, Z) = W·cov(X, Z)`. Its columns aren't
+orthonormal, so take an SVD and keep the left singular vectors:
+
+```
+W·Σ_XZ = U S Vᵀ        →     U = orthonormal basis of the whitened concept subspace
+```
+
+`U` is `d × r`, where `r` is the number of non-negligible singular values — the concept's *effective*
+dimension. Redundant questions collapse into the same singular direction, so `r` can be smaller than `k`.
+
+**Project it out, then un-whiten.** In the whitened space, `U Uᵀ` projects onto the concept subspace
+(`U Uᵀ v = Σⱼ (uⱼᵀv) uⱼ`: project onto each concept axis and add them up), so `I − U Uᵀ` keeps everything
+except the concept. Putting the whole thing together — whiten, delete the concept, un-whiten, add the
+mean back:
 
 ```
 r(x) = μ + Σ^{1/2} · (I − U Uᵀ) · Σ^{-1/2} · (x − μ)
             un-whiten   project out    whiten
 ```
 
-`U` is an orthonormal basis for the concept subspace in the whitened space, so `I − UUᵀ` keeps
-everything except the concept. Here's the one bit of "why it's guaranteed" worth internalizing: a linear
-probe can only read the concept through the cross-covariance `cov(X, Z)` between the embedding and the
-concept `Z`. Removing exactly the whitened concept subspace makes the residual orthogonal to every
-concept direction, so `cov(r(X), Z) = 0`. In other words, there is literally no direction left for a
-linear probe to use, and you've changed `x` as little as that constraint allows.
+**Why it's guaranteed, and why it's minimal.** Two properties come for free. First, `cov(r(X), Z) = 0`
+exactly: the residual has no component along the whitened concept directions `W·Σ_XZ`, and zero projection
+onto those is precisely zero covariance with `Z`. Second, it changes `x` as little as possible: because
+the removal is an *orthogonal* projection in the whitened (isotropic) space, it maps each point to the
+nearest point that satisfies the constraint. One closed-form shot, no iteration.
 
 One rule of thumb falls out of this, and it matters later: erasing a `k`-dimensional concept means
-removing about `k` directions. Gender is basically one direction, so a single question kills it. A
-28-way attribute like occupation is high-rank and much harder, which I'll come back to at the end.
+removing about `k` directions (that's the `r`). Gender is basically one direction, so a single question
+kills it. A 28-way attribute like occupation is high-rank and much harder, which I'll come back to.
 
 ---
 
