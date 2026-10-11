@@ -188,11 +188,18 @@ different tools. Take a bunch of safe queries and count how many unsafe document
 
 Erasing toxicity doesn't actually keep toxic documents out of your results. Once you've deleted the axis,
 you've also deleted the signal you'd need to filter on. If the goal is to *exclude* unsafe content, you
-have to do the opposite and keep the direction `û`, then penalize it at ranking time.
+have to do the opposite: keep the direction and penalize it at ranking time.
+
+**First, what that direction is.** Call it `û` — a *single* unit vector in embedding space that points
+from the safe region toward the unsafe one (the "unsafe axis"). The one property that matters here is
+that its dot product with a document *is* that document's unsafe score: `û·x` is large for toxic text,
+small for clean text. (I'll derive `û` from the same fit in the next section — and note it's a *different*
+object from the whitened basis `U` used for erasure: `û` is a single raw direction in the original space,
+`U` is an orthonormal basis in the whitened space. More on why that distinction matters below.)
 
 ### The query-shift gate
 
-The nice trick is that you can fold that penalty straight into the query. Shift the query by the concept
+The nice trick is that you can fold the penalty straight into the query. Shift the query by that
 direction, `q' = q − α·û`, and write out the similarity:
 
 ```
