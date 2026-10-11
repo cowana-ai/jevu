@@ -209,45 +209,40 @@ sim(q', x) = q·x − α·(û·x) = sim(q, x) − α·(unsafe score of x)
 Since `û·x` is just the document's unsafe score, the shifted query subtracts a penalty in proportion to
 how unsafe each document is. Mathematically this is exactly a linear reranking penalty `sim − α·s(x)`,
 except you never run a separate reranking pass — the dot product your index already computes does it for
-you. `α` controls how hard you push:
+you. `α` controls how hard you push, and across all safe queries the unsafe content in the top-10 falls
+steadily:
 
 | α | 0 | 0.3 | 0.6 | 1.0 | 1.5 |
 |---|---|---|---|---|---|
-| unsafe in top-10 | 0.45 | 0.24 | 0.13 | 0.07 | 0.04 |
+| unsafe in top-10 | 0.45 | 0.22 | 0.10 | 0.04 | 0.02 |
 
-Two concrete queries. First, *"why did you delete my contribution"*, the kind of edit-dispute query that
-drags in flames. Before, the top-5 is 60% unsafe:
-```
-1. [safe]    I noticed that you deleted peacecorpswiki — why did you delete this…
-2. [UNSAFE]  niggerballs — why did you delete the page …[redacted]
-3. [safe]    what responsibility?, why are you so stubborn???…
-4. [UNSAFE]  Question — can you tell me what …[redacted]
-5. [UNSAFE]  Listen asshole, you do NOT delete my pages …[redacted]
-```
-After `q' = q − α·û`, the top-5 is 0% unsafe, and the relevant result is still on top:
-```
-1. [safe]    I noticed that you deleted peacecorpswiki — why did you delete this…
-2. [safe]    I reverted the page to the last stable form…
-3. [safe]    I have added the paragraph that answers this question.
-4. [safe]    As the deleting administrator, I will comment further…
-```
-
-Second, *"this discussion is getting heated"*, which pulls in a different kind of flame. Before, the
-top-5 is again 60% unsafe:
+To see it on one query, take *"this discussion is getting heated"*. Before, three of the top-5 are flame
+(I'm redacting them):
 ```
 1. [UNSAFE]  OMG, 'I dispute the gayness of this discussio …[redacted]
 2. [UNSAFE]  I wish to restate the AN thread as neutral an …[redacted]
 3. [UNSAFE]  Homosexuality — please attempt to refrain from …[redacted]
 4. [safe]    Aw come on! What's it really matter...
-5. [safe]    …it is starting to seem less than likely that we can make…
+5. [safe]    …it is starting to seem less than likely that we can make the both of you…
 ```
-After the shift, the unsafe ones are gone and the results are on-topic civil discussion:
+With a moderate shift (`α = 0.6`) the unsafe ones drop out, and what's left is still about a heated
+disagreement — stalemates, two parties who can't be reconciled — so the penalty took out the toxicity
+without throwing away the topic:
 ```
 1. [safe]    Well, what I mean is: should the singles for the other markets…
-2. [safe]    Favor — Hi Ruhr. At last, Columbia Slough is ready for vetting…
+2. [safe]    …it is starting to seem less than likely that we can make the both of you…
 3. [safe]    I have added the paragraph that answers this question.
-4. [safe]    Thanks for adding the Olson 1967 reference…
+4. [safe]    The battle has been one big stalemate since the initial opposition attack.
+5. [safe]    Incidentally, an expanded account of the … controversy…
 ```
+
+A couple of honest notes, because this is where the method has sharp edges. `α` is a dial, and the right
+setting is **query-dependent**: this query clears at 0.6, but a more flame-heavy one needs a stronger
+push (around 1.5) to hit zero. And if you push too hard, two things go wrong — the query drifts off the
+user's intent and the results get generic, and at very large `α` you can even steer into a region that
+pulls odd items back in. So treat `α ≈ 0.3–0.6` as a sensible default and tune up only as needed. (It's
+also worth remembering this is a toxicity *corpus*, not a real search index, so "relevance" here is loose
+to begin with — the thing being cleanly controlled is the safety axis, not ranking quality.)
 
 ### Deploying it in a real vector store
 
