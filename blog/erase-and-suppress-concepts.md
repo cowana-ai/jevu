@@ -296,12 +296,27 @@ and you get a single unit direction `û` whose dot product with any embedding is
 score. (Centering the scores is what makes this a *difference* of means rather than just the center of
 the whole cloud — that part matters.)
 
-So putting everything together, a single fitted object covers all three jobs:
+In full, computing `û` is a handful of lines — no library needed. `X` is your `(n, d)` embeddings and
+`Z` is the `(n, k)` matrix of laya scores (one column per question):
 
 ```python
-eraser.transform(x)        # erase   — make the concept invisible      (whitened projection)
+Xc = X - X.mean(0)                 # center the embeddings
+Zc = Z - Z.mean(0)                 # center the scores — this is what makes it a difference of means
+Sxz = Xc.T @ Zc / len(X)           # (d, k) cross-covariance
+u = Sxz.sum(axis=1)                # sum the per-question columns -> one direction (d,)
+u = u / np.linalg.norm(u)          # unit length
+if np.corrcoef(X @ u, Zc.sum(1))[0, 1] < 0:   # orient so +u means "unsafe"
+    u = -u
+```
+
+With `u` in hand, everything else is a dot product: `X @ u` scores documents, and `q - alpha * u`
+steers a query. Erasing (the whitened `transform`) reuses the same `Sxz` internally, so a single fit
+covers all three jobs:
+
+```python
 eraser.score(x)            # detect  — (x − μ)·û, text-free, on embeddings alone
 eraser.steer(q, alpha)     # suppress — q − α·û, the retrieval gate
+eraser.transform(x)        # erase   — make the concept invisible (whitened projection)
 ```
 
 Text-free detection on held-out embeddings gets to **0.917 AUC**, with no separate classifier and no
