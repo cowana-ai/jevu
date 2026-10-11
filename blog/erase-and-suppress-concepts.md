@@ -26,18 +26,19 @@ These are opposite operations on the same quantity, and that distinction is the 
 across. The good news is that both come out of a single fit, and both run locally. Let me build up the
 method first, then go through each use case with real numbers and figures.
 
-## A local pipeline
+## Keeping it local
 
-One practical constraint drives the whole design: the text you most want to control (toxic, NSFW,
-anything PII-adjacent) is exactly the text you can't send off to a hosted API. So every piece runs
-on-device:
+One thing I want to flag early, because it shaped the rest of the design: all of this runs on your own
+machine. That's not just a nice-to-have. The data you'd most want to clean up — toxic comments, NSFW
+text, anything close to PII — is exactly the data you can't ship off to some hosted API just to get it
+scored. So I kept hosted services out of the loop entirely.
 
-- local embeddings (I used `sentence-transformers/all-MiniLM-L6-v2`),
-- a local scorer, [laya](https://huggingface.co/convaiinnovations/laya), which takes a text plus a yes/no
-  question and returns a calibrated probability in `[0, 1]` — no labels, no thresholds, no network,
-- a pure-numpy eraser, [LEACE](https://arxiv.org/abs/2306.03819).
-
-Nothing leaves your machine, which is really the whole point when the data is sensitive.
+There are three pieces. The embeddings come from a local model (I used `all-MiniLM-L6-v2`, but you can
+bring your own). The scoring is done by [laya](https://huggingface.co/convaiinnovations/laya), a small
+open-weights model that answers a yes/no question about a text with a calibrated probability between 0
+and 1 — it runs on your GPU, no key, no network. And the eraser itself,
+[LEACE](https://arxiv.org/abs/2306.03819), is just numpy. So from raw text to a cleaned embedding,
+nothing ever leaves the box.
 
 ## How erasure works
 
